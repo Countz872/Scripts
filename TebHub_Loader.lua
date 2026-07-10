@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.6"
+local TEB_HUB_VERSION = "1.2.8"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2460,6 +2460,7 @@ local mailLimitWindowHours = math.max(
 )
 
 local mailUsageTimestamps = {}
+local sessionMailCount = 0
 
 if mailerCloudData and type(mailerCloudData.mailUsageTimestamps) == "table" then
 	for _, timestamp in ipairs(mailerCloudData.mailUsageTimestamps) do
@@ -2597,6 +2598,8 @@ local KG_ATTRIBUTES = {
 
 local running = true
 local mailing = false
+local serverDailyLimitReached = false
+local dailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!"
 
 local fruitCache = {}
 local connectedRoots = {}
@@ -5356,6 +5359,10 @@ refreshUI = function()
 		lastStockCardCount,
 		fallbackCount
 	)
+
+	if updateMailLimitDisplay then
+		updateMailLimitDisplay()
+	end
 end
 
 local function getRecipientsForPlanning()
@@ -5564,16 +5571,27 @@ local function makePreview()
 	local previewLines = {}
 	local usedMails, remainingMails, resetIn = getMailLimitState()
 
-	table.insert(
-		previewLines,
-		string.format(
-			"Mail allowance: %d/%d used | %d left%s",
-			usedMails,
-			mailLimitCount,
-			remainingMails,
-			remainingMails <= 0 and (" | reset in " .. formatDuration(resetIn)) or ""
+	if serverDailyLimitReached then
+		table.insert(
+			previewLines,
+			string.format(
+				"Mail allowance: %d/%d used | DAILY LIMIT REACHED",
+				usedMails,
+				mailLimitCount
+			)
 		)
-	)
+	else
+		table.insert(
+			previewLines,
+			string.format(
+				"Mail allowance: %d/%d used | %d left%s",
+				usedMails,
+				mailLimitCount,
+				remainingMails,
+				remainingMails <= 0 and (" | reset in " .. formatDuration(resetIn)) or ""
+			)
+		)
+	end
 
 	if targetMode == "Fruit" then
 		table.insert(
@@ -5750,6 +5768,13 @@ local function sendPlans(plans, reason)
 	end
 
 	local usedMails, remainingMails, resetIn = getMailLimitState()
+
+	if serverDailyLimitReached then
+		addLog(dailyLimitWarningText, Color3.fromRGB(255, 90, 90))
+		updateMailLimitDisplay()
+		return
+	end
+
 	if remainingMails <= 0 then
 		addLog(
 			string.format(
@@ -5842,6 +5867,14 @@ local function sendPlans(plans, reason)
 						if not mailing then break end
 
 						local usedNow, remainingNow, resetNow = getMailLimitState()
+
+						if serverDailyLimitReached then
+							stoppedReason = "server daily gift limit reached"
+							mailing = false
+							updateMailLimitDisplay()
+							break
+						end
+
 						if remainingNow <= 0 then
 							stoppedReason = string.format(
 								"mail limit reached (%d/%d); reset in %s",
@@ -5881,15 +5914,26 @@ local function sendPlans(plans, reason)
 
 						markFruitsAsSent(batch)
 
-						local usageOk, usageError = pcall(recordMailUsage)
+						local usageOk, usedAfter, remainingAfterAllowance = pcall(recordMailUsage)
+
 						if not usageOk then
 							addLog(
-								"Mail sent, but usage tracker failed: " .. tostring(usageError),
+								"Mail sent, but usage tracker failed: " .. tostring(usedAfter),
 								Color3.fromRGB(255, 190, 90)
 							)
 							if debugTrace then
-								debugTrace("USAGE TRACKER ERROR: " .. tostring(usageError))
+								debugTrace("USAGE TRACKER ERROR: " .. tostring(usedAfter))
 							end
+						else
+							addLog(
+								string.format(
+									"Mail allowance updated: %d/%d used | %d left",
+									tonumber(usedAfter) or 0,
+									mailLimitCount,
+									tonumber(remainingAfterAllowance) or 0
+								),
+								Color3.fromRGB(170, 220, 255)
+							)
 						end
 
 						addLog(
@@ -6066,10 +6110,21 @@ _G.TEBHubCloudSections.Mailer = {
 
 local function updateMailLimitDisplay()
 	local used, remaining, resetIn = getMailLimitState()
+
+	if serverDailyLimitReached and remaining > 0 then
+		serverDailyLimitReached = false
+	end
 	mailLimitCountBox.Text = tostring(mailLimitCount)
 	mailWindowBox.Text = tostring(mailLimitWindowHours)
 
-	if remaining <= 0 then
+	if serverDailyLimitReached and remaining <= 0 then
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | DAILY LIMIT REACHED",
+			used,
+			mailLimitCount
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(255, 90, 90)
+	elseif remaining <= 0 then
 		mailLimitStatus.Text = string.format(
 			"%d/%d used | reset in %s",
 			used,
@@ -6089,11 +6144,131 @@ local function updateMailLimitDisplay()
 end
 
 recordMailUsage = function()
+	sessionMailCount += 1
 	table.insert(mailUsageTimestamps, os.time())
-	pruneMailUsage()
+
+	local used = pruneMailUsage()
+	local remaining = math.max(0, mailLimitCount - used)
+
+	-- Update the visible allowance immediately for this mail.
+	mailLimitCountBox.Text = tostring(mailLimitCount)
+	mailWindowBox.Text = tostring(mailLimitWindowHours)
+
+	if remaining <= 0 then
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | %s",
+			used,
+			mailLimitCount,
+			serverDailyLimitReached and "DAILY LIMIT REACHED" or "0 left"
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(255, 90, 90)
+	else
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | %d left",
+			used,
+			mailLimitCount,
+			remaining
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
+	end
+
+	-- Re-run on the next frame too, in case another UI refresh occurred
+	-- during the same mail batch.
+	task.defer(function()
+		if running and mailLimitStatus and mailLimitStatus.Parent then
+			updateMailLimitDisplay()
+		end
+	end)
+
+	queueMailerCloudSave()
+	return used, remaining
+end
+
+
+local function normalizeDailyLimitText(value)
+	return tostring(value or "")
+		:lower()
+		:gsub("’", "'")
+		:gsub("%s+", " ")
+		:gsub("^%s+", "")
+		:gsub("%s+$", "")
+end
+
+local function isDailyGiftLimitText(value)
+	local normalized = normalizeDailyLimitText(value)
+
+	return normalized:find("reached your daily gift", 1, true) ~= nil
+		and normalized:find("50", 1, true) ~= nil
+		and normalized:find("try again tomorrow", 1, true) ~= nil
+end
+
+local function markDailyGiftLimitReached(sourceText)
+	if serverDailyLimitReached then
+		return
+	end
+
+	serverDailyLimitReached = true
+	mailing = false
+
+	local now = os.time()
+	pruneMailUsage(now)
+
+	while #mailUsageTimestamps < mailLimitCount do
+		table.insert(mailUsageTimestamps, now)
+	end
+
+	while #mailUsageTimestamps > mailLimitCount do
+		table.remove(mailUsageTimestamps, 1)
+	end
+
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
+
+	addLog(dailyLimitWarningText, Color3.fromRGB(255, 90, 90))
+
+	if debugTrace then
+		debugTrace("SERVER DAILY LIMIT WARNING: " .. tostring(sourceText))
+	end
 end
+
+local watchedDailyLimitObjects = setmetatable({}, { __mode = "k" })
+
+local function watchDailyLimitTextObject(object)
+	if watchedDailyLimitObjects[object] then
+		return
+	end
+
+	if not (
+		object:IsA("TextLabel")
+		or object:IsA("TextButton")
+		or object:IsA("TextBox")
+	) then
+		return
+	end
+
+	watchedDailyLimitObjects[object] = true
+
+	local function inspect()
+		local ok, currentText = pcall(function()
+			return object.Text
+		end)
+
+		if ok and isDailyGiftLimitText(currentText) then
+			markDailyGiftLimitReached(currentText)
+		end
+	end
+
+	inspect()
+	object:GetPropertyChangedSignal("Text"):Connect(inspect)
+end
+
+for _, object in ipairs(playerGui:GetDescendants()) do
+	watchDailyLimitTextObject(object)
+end
+
+playerGui.DescendantAdded:Connect(function(object)
+	watchDailyLimitTextObject(object)
+end)
 
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
