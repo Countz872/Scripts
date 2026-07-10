@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.3"
+local TEB_HUB_VERSION = "1.2.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2593,6 +2593,27 @@ local avatarCardMap = {}
 -- Invalidates old asynchronous lookup tasks whenever cards are cleared/reloaded.
 local recipientLoadGeneration = 0
 local recipientLookupSerial = 0
+
+local debugEntries = {}
+local DEBUG_LIMIT = 250
+local debugTextBox
+
+local function debugTrace(message)
+	message = tostring(message)
+	local line = os.date("%H:%M:%S") .. " | " .. message
+	table.insert(debugEntries, line)
+
+	if #debugEntries > DEBUG_LIMIT then
+		table.remove(debugEntries, 1)
+	end
+
+	print("[TEB Mailer Debug]", line)
+
+	if debugTextBox then
+		debugTextBox.Text = table.concat(debugEntries, "\n")
+		debugTextBox.CursorPosition = #debugTextBox.Text + 1
+	end
+end
 local historyEntries = {}
 local logEntries = {}
 local progressRows = {}
@@ -3141,6 +3162,22 @@ for _, button in ipairs({ previewButton, sendButton, logsButton }) do
 	c.Parent = button
 end
 
+local debugButton = Instance.new("TextButton")
+debugButton.Name = "DebugButton"
+debugButton.Size = UDim2.fromOffset(74, 24)
+debugButton.Position = UDim2.new(1, -152, 0, 20)
+debugButton.BackgroundColor3 = Color3.fromRGB(78, 58, 102)
+debugButton.BorderSizePixel = 0
+debugButton.Text = "Debugger"
+debugButton.Font = Enum.Font.GothamBold
+debugButton.TextSize = 9
+debugButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+debugButton.Parent = content
+
+local debugButtonCorner = Instance.new("UICorner")
+debugButtonCorner.CornerRadius = UDim.new(0, 7)
+debugButtonCorner.Parent = debugButton
+
 local valueModeButton = Instance.new("TextButton")
 valueModeButton.Name = "ValueModeCheck"
 valueModeButton.Size = UDim2.fromOffset(96, 24)
@@ -3428,6 +3465,82 @@ logLayout.Padding = UDim.new(0, 4)
 logLayout.SortOrder = Enum.SortOrder.LayoutOrder
 logLayout.Parent = logFrame
 
+local debugPanel = Instance.new("Frame")
+debugPanel.Name = "DebugPanel"
+debugPanel.Size = UDim2.new(1, 0, 0, 250)
+debugPanel.Position = UDim2.fromOffset(0, 980)
+debugPanel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+debugPanel.BorderSizePixel = 0
+debugPanel.Visible = false
+debugPanel.Parent = content
+
+local debugPanelCorner = Instance.new("UICorner")
+debugPanelCorner.CornerRadius = UDim.new(0, 8)
+debugPanelCorner.Parent = debugPanel
+
+local debugTitle = Instance.new("TextLabel")
+debugTitle.Size = UDim2.new(1, -170, 0, 28)
+debugTitle.Position = UDim2.fromOffset(8, 4)
+debugTitle.BackgroundTransparency = 1
+debugTitle.Text = "PLAYER LOAD DEBUGGER"
+debugTitle.Font = Enum.Font.GothamBold
+debugTitle.TextSize = 10
+debugTitle.TextColor3 = Color3.fromRGB(220, 220, 230)
+debugTitle.TextXAlignment = Enum.TextXAlignment.Left
+debugTitle.Parent = debugPanel
+
+local clearDebugButton = Instance.new("TextButton")
+clearDebugButton.Size = UDim2.fromOffset(62, 24)
+clearDebugButton.Position = UDim2.new(1, -168, 0, 6)
+clearDebugButton.BackgroundColor3 = Color3.fromRGB(95, 55, 55)
+clearDebugButton.BorderSizePixel = 0
+clearDebugButton.Text = "Clear"
+clearDebugButton.Font = Enum.Font.GothamBold
+clearDebugButton.TextSize = 9
+clearDebugButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+clearDebugButton.Parent = debugPanel
+
+local clearDebugCorner = Instance.new("UICorner")
+clearDebugCorner.CornerRadius = UDim.new(0, 7)
+clearDebugCorner.Parent = clearDebugButton
+
+local copyDebugButton = Instance.new("TextButton")
+copyDebugButton.Size = UDim2.fromOffset(92, 24)
+copyDebugButton.Position = UDim2.new(1, -100, 0, 6)
+copyDebugButton.BackgroundColor3 = Color3.fromRGB(55, 95, 75)
+copyDebugButton.BorderSizePixel = 0
+copyDebugButton.Text = "Copy Debug Log"
+copyDebugButton.Font = Enum.Font.GothamBold
+copyDebugButton.TextSize = 9
+copyDebugButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+copyDebugButton.Parent = debugPanel
+
+local copyDebugCorner = Instance.new("UICorner")
+copyDebugCorner.CornerRadius = UDim.new(0, 7)
+copyDebugCorner.Parent = copyDebugButton
+
+debugTextBox = Instance.new("TextBox")
+debugTextBox.Name = "DebugTextBox"
+debugTextBox.Size = UDim2.new(1, -16, 1, -42)
+debugTextBox.Position = UDim2.fromOffset(8, 34)
+debugTextBox.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+debugTextBox.BorderSizePixel = 0
+debugTextBox.ClearTextOnFocus = false
+debugTextBox.MultiLine = true
+debugTextBox.TextEditable = true
+debugTextBox.TextWrapped = false
+debugTextBox.TextXAlignment = Enum.TextXAlignment.Left
+debugTextBox.TextYAlignment = Enum.TextYAlignment.Top
+debugTextBox.Font = Enum.Font.Code
+debugTextBox.TextSize = 10
+debugTextBox.TextColor3 = Color3.fromRGB(210, 230, 255)
+debugTextBox.Text = ""
+debugTextBox.Parent = debugPanel
+
+local debugTextCorner = Instance.new("UICorner")
+debugTextCorner.CornerRadius = UDim.new(0, 6)
+debugTextCorner.Parent = debugTextBox
+
 --// DRAGGING
 
 do
@@ -3539,6 +3652,47 @@ logsButton.MouseButton1Click:Connect(function()
 		end)
 	end
 end)
+
+debugButton.MouseButton1Click:Connect(function()
+	debugPanel.Visible = not debugPanel.Visible
+	debugButton.Text = debugPanel.Visible and "Debugger ▲" or "Debugger"
+
+	if debugPanel.Visible then
+		task.defer(function()
+			content.CanvasPosition = Vector2.new(0, 940)
+		end)
+	end
+end)
+
+copyDebugButton.MouseButton1Click:Connect(function()
+	local payload = table.concat(debugEntries, "\n")
+
+	if type(setclipboard) == "function" then
+		setclipboard(payload)
+		copyDebugButton.Text = "Copied"
+	elseif type(toclipboard) == "function" then
+		toclipboard(payload)
+		copyDebugButton.Text = "Copied"
+	else
+		debugTextBox:CaptureFocus()
+		debugTextBox.CursorPosition = 1
+		debugTextBox.SelectionStart = #debugTextBox.Text + 1
+		copyDebugButton.Text = "Select + Copy"
+	end
+
+	task.delay(1.5, function()
+		if copyDebugButton.Parent then
+			copyDebugButton.Text = "Copy Debug Log"
+		end
+	end)
+end)
+
+clearDebugButton.MouseButton1Click:Connect(function()
+	table.clear(debugEntries)
+	debugTextBox.Text = ""
+	debugTrace("Debug log cleared.")
+end)
+
 
 --// LOG / HISTORY
 
@@ -3994,9 +4148,17 @@ local function getUserIdFromUsername(username)
 	local lastError
 
 	for attempt = 1, 3 do
-		local ok, result = pcall(function()
+		debugTrace("Resolver attempt " .. tostring(attempt) .. " for " .. tostring(username))
+
+		local ok, result = xpcall(function()
 			return Players:GetUserIdFromNameAsync(username)
-		end)
+		end, debug.traceback)
+
+		debugTrace(
+			"Resolver returned | attempt=" .. tostring(attempt)
+				.. " | ok=" .. tostring(ok)
+				.. " | result=" .. tostring(result)
+		)
 
 		result = tonumber(result)
 
@@ -4027,7 +4189,21 @@ local function userIdToMailBytes(userId)
 end
 
 loadRecipientsFromBox = function()
-	local recipients = parseRecipientQueries(recipientBox.Text)
+	debugTrace("Load Players clicked")
+	debugTrace("Raw input: " .. tostring(recipientBox.Text))
+
+	local parseOk, recipientsOrError = xpcall(function()
+		return parseRecipientQueries(recipientBox.Text)
+	end, debug.traceback)
+
+	if not parseOk then
+		debugTrace("Parser error: " .. tostring(recipientsOrError))
+		addLog("Player parser failed. Open Debugger.", Color3.fromRGB(255, 120, 120))
+		return
+	end
+
+	local recipients = recipientsOrError
+	debugTrace("Parsed recipients: " .. tostring(#recipients))
 
 	if #recipients == 0 then
 		addLog("No usernames entered.", Color3.fromRGB(255, 220, 120))
@@ -4038,6 +4214,7 @@ loadRecipientsFromBox = function()
 
 	for _, recipient in ipairs(recipients) do
 		local username = recipient.Username
+		debugTrace("Preparing username: " .. tostring(username))
 		local mapKey = username:lower()
 
 		local existingData = loadedRecipientMap[mapKey]
@@ -4205,6 +4382,12 @@ loadRecipientsFromBox = function()
 		updateCardAmount()
 
 		task.spawn(function()
+			debugTrace(
+				"Lookup task started | user=" .. tostring(username)
+					.. " | serial=" .. tostring(thisLookupSerial)
+					.. " | generation=" .. tostring(thisGeneration)
+			)
+
 			local finished = false
 
 			local function isCurrentLoad()
@@ -4242,17 +4425,32 @@ loadRecipientsFromBox = function()
 				)
 			end)
 
-			local userOk, userIdOrError = pcall(function()
+			debugTrace("Calling username resolver for " .. tostring(username))
+
+			local userOk, userIdOrError = xpcall(function()
 				return getUserIdFromUsername(username)
-			end)
+			end, debug.traceback)
+
+			debugTrace(
+				"Resolver finished | user=" .. tostring(username)
+					.. " | ok=" .. tostring(userOk)
+					.. " | value=" .. tostring(userIdOrError)
+			)
 
 			if not isCurrentLoad() then
+				debugTrace(
+					"Lookup became stale | user=" .. tostring(username)
+						.. " | cardParent=" .. tostring(card.Parent)
+						.. " | recipientMapMatch=" .. tostring(loadedRecipientMap[mapKey] == recipientData)
+						.. " | cardMapMatch=" .. tostring(avatarCardMap[mapKey] == card)
+				)
 				return
 			end
 
 			local resolvedUserId = tonumber(userIdOrError)
 
 			if not userOk or not resolvedUserId then
+				debugTrace("Lookup failed | user=" .. tostring(username) .. " | error=" .. tostring(userIdOrError))
 				finished = true
 				recipientData.LoadState = "Failed"
 				nameLabel.Text = username .. "\nload failed"
@@ -4278,6 +4476,7 @@ loadRecipientsFromBox = function()
 				return
 			end
 
+			debugTrace("Lookup success | user=" .. tostring(username) .. " | userId=" .. tostring(resolvedUserId))
 			recipientData.UserId = resolvedUserId
 			recipientData.LoadState = "Loaded"
 			finished = true
@@ -6025,6 +6224,10 @@ task.defer(function()
 	refreshUI()
 
 	addLog("Loaded mailer with rolling " .. tostring(mailLimitCount) .. "-mail / " .. tostring(mailLimitWindowHours) .. "h tracker.", Color3.fromRGB(170, 255, 170))
+debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
+debugTrace("Local player: " .. tostring(player and player.Name))
+debugTrace("GetUserIdFromNameAsync method: " .. tostring(Players.GetUserIdFromNameAsync))
+debugTrace("Clipboard function available: " .. tostring(type(setclipboard) == "function" or type(toclipboard) == "function"))
 end)
 
 -- TEB Hub lifecycle bridge
