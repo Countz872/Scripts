@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.3"
+local TEB_HUB_VERSION = "1.1.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2789,6 +2789,7 @@ main.Size = UDim2.fromOffset(430, 470)
 main.Position = UDim2.fromOffset(8, 52)
 main.BackgroundColor3 = Color3.fromRGB(22, 22, 24)
 main.BorderSizePixel = 0
+main.ZIndex = 1
 main.Parent = gui
 
 local mainScale = Instance.new("UIScale")
@@ -6040,6 +6041,34 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "PlantFruitCounterUI"
 gui.ResetOnSpawn = false
 gui.Parent = playerGui
+
+-- Permanent side toggle. This remains visible even when the main hub is hidden.
+local sideToggle = Instance.new("TextButton")
+sideToggle.Name = "TEBHubToggle"
+sideToggle.Size = UDim2.fromOffset(104, 38)
+sideToggle.Position = UDim2.new(0, 8, 0.5, -19)
+sideToggle.BackgroundColor3 = Color3.fromRGB(62, 52, 135)
+sideToggle.BorderSizePixel = 0
+sideToggle.Text = "TEB Hub"
+sideToggle.Font = Enum.Font.GothamBold
+sideToggle.TextSize = 12
+sideToggle.TextColor3 = Color3.new(1, 1, 1)
+sideToggle.AutoButtonColor = true
+sideToggle.Visible = true
+sideToggle.Active = true
+sideToggle.Selectable = true
+sideToggle.ZIndex = 1000
+sideToggle.Parent = gui
+
+local sideToggleCorner = Instance.new("UICorner")
+sideToggleCorner.CornerRadius = UDim.new(0, 10)
+sideToggleCorner.Parent = sideToggle
+
+local sideToggleStroke = Instance.new("UIStroke")
+sideToggleStroke.Color = Color3.fromRGB(145, 125, 255)
+sideToggleStroke.Thickness = 1.25
+sideToggleStroke.Transparency = 0.15
+sideToggleStroke.Parent = sideToggle
 
 local main = Instance.new("Frame")
 main.Name = "MainFrame"
