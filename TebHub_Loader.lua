@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.6"
+local TEB_HUB_VERSION = "1.1.7"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2759,29 +2759,6 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = playerGui
 
-local sideToggle = Instance.new("TextButton")
-sideToggle.Name = "TEBHubToggle"
-sideToggle.Size = UDim2.fromOffset(96, 34)
-sideToggle.Position = UDim2.new(0, 8, 0.5, -17)
-sideToggle.BackgroundColor3 = Color3.fromRGB(62, 52, 135)
-sideToggle.BorderSizePixel = 0
-sideToggle.Text = "TEB Hub"
-sideToggle.Font = Enum.Font.GothamBold
-sideToggle.TextSize = 12
-sideToggle.TextColor3 = Color3.new(1, 1, 1)
-sideToggle.AutoButtonColor = true
-sideToggle.ZIndex = 100
-sideToggle.Parent = gui
-
-local sideToggleCorner = Instance.new("UICorner")
-sideToggleCorner.CornerRadius = UDim.new(0, 9)
-sideToggleCorner.Parent = sideToggle
-
-local sideToggleStroke = Instance.new("UIStroke")
-sideToggleStroke.Color = Color3.fromRGB(135, 115, 255)
-sideToggleStroke.Thickness = 1
-sideToggleStroke.Transparency = 0.2
-sideToggleStroke.Parent = sideToggle
 
 local main = Instance.new("Frame")
 main.Name = "Main"
@@ -6042,33 +6019,6 @@ gui.Name = "PlantFruitCounterUI"
 gui.ResetOnSpawn = false
 gui.Parent = playerGui
 
--- Permanent side toggle. This remains visible even when the main hub is hidden.
-local sideToggle = Instance.new("TextButton")
-sideToggle.Name = "TEBHubToggle"
-sideToggle.Size = UDim2.fromOffset(104, 38)
-sideToggle.Position = UDim2.new(0, 8, 0.5, -19)
-sideToggle.BackgroundColor3 = Color3.fromRGB(62, 52, 135)
-sideToggle.BorderSizePixel = 0
-sideToggle.Text = "TEB Hub"
-sideToggle.Font = Enum.Font.GothamBold
-sideToggle.TextSize = 12
-sideToggle.TextColor3 = Color3.new(1, 1, 1)
-sideToggle.AutoButtonColor = true
-sideToggle.Visible = true
-sideToggle.Active = true
-sideToggle.Selectable = true
-sideToggle.ZIndex = 1000
-sideToggle.Parent = gui
-
-local sideToggleCorner = Instance.new("UICorner")
-sideToggleCorner.CornerRadius = UDim.new(0, 10)
-sideToggleCorner.Parent = sideToggle
-
-local sideToggleStroke = Instance.new("UIStroke")
-sideToggleStroke.Color = Color3.fromRGB(145, 125, 255)
-sideToggleStroke.Thickness = 1.25
-sideToggleStroke.Transparency = 0.15
-sideToggleStroke.Parent = sideToggle
 
 local main = Instance.new("Frame")
 main.Name = "MainFrame"
@@ -6506,6 +6456,35 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
+
+-- The one permanent TEB Hub side toggle.
+-- It is outside the main frame, so hiding the hub cannot hide this button.
+local sideToggle = Instance.new("TextButton")
+sideToggle.Name = "TEBHubToggle"
+sideToggle.Size = UDim2.fromOffset(104, 38)
+sideToggle.Position = UDim2.new(0, 8, 0.5, -19)
+sideToggle.BackgroundColor3 = Color3.fromRGB(62, 52, 135)
+sideToggle.BorderSizePixel = 0
+sideToggle.Text = "TEB Hub"
+sideToggle.Font = Enum.Font.GothamBold
+sideToggle.TextSize = 12
+sideToggle.TextColor3 = Color3.new(1, 1, 1)
+sideToggle.AutoButtonColor = true
+sideToggle.Visible = true
+sideToggle.Active = true
+sideToggle.Selectable = true
+sideToggle.ZIndex = 1000
+sideToggle.Parent = gui
+
+local sideToggleCorner = Instance.new("UICorner")
+sideToggleCorner.CornerRadius = UDim.new(0, 10)
+sideToggleCorner.Parent = sideToggle
+
+local sideToggleStroke = Instance.new("UIStroke")
+sideToggleStroke.Color = Color3.fromRGB(145, 125, 255)
+sideToggleStroke.Thickness = 1.25
+sideToggleStroke.Transparency = 0.15
+sideToggleStroke.Parent = sideToggle
 
 local main = Instance.new("Frame")
 main.Name = "Main"
@@ -7324,30 +7303,35 @@ do
 end
 
 local function setHubVisible(visible)
+	-- UI visibility only. All automation modules continue running.
 	main.Visible = visible == true
 	sideToggle.Visible = true
 	sideToggle.Active = true
 	sideToggle.ZIndex = 1000
-	sideToggle.Text = "TEB Hub"
 end
 
+minimizeButton.MouseButton1Click:Connect(function()
+	setHubVisible(false)
+end)
+
 sideToggle.MouseButton1Click:Connect(function()
-	sideToggle.ZIndex = 1000
 	setHubVisible(not main.Visible)
 end)
 
 closeButton.MouseButton1Click:Connect(function()
-	-- The red X is the only hub control that intentionally stops all modules.
-	-- The minimize button and side toggle only hide/show the interface.
+	-- Only the red X intentionally stops and destroys the entire hub.
 	hubRunning = false
 	rejoining = false
+
 	if autoRejoinConnection then
 		autoRejoinConnection:Disconnect()
 		autoRejoinConnection = nil
 	end
+
 	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
 		stopModule(name)
 	end
+
 	gui:Destroy()
 end)
 
