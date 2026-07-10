@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.2"
+local TEB_HUB_VERSION = "1.1.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -6398,6 +6398,75 @@ local function stopModule(name)
 end
 
 -- ============================================================
+-- INSTANT CORE STARTUP
+-- These start before Cloudflare and before any TEB Hub UI is created.
+-- ============================================================
+
+local earlyStatusMessage = "Starting core modules..."
+local earlyStatusError = false
+local earlySetStatus = function(message, isError)
+	earlyStatusMessage = tostring(message)
+	earlyStatusError = isError == true
+	if isError then
+		warn("[TEB Hub]", message)
+	else
+		print("[TEB Hub]", message)
+	end
+end
+
+-- Start Optimizer immediately. Do not wait for the hub UI or cloud config.
+do
+	local started, startError = executeModule("Optimizer")
+	if started then
+		moduleEnabled.Optimizer = true
+		earlySetStatus("Optimizer started immediately.")
+	else
+		moduleEnabled.Optimizer = false
+		earlySetStatus("Optimizer failed to start: " .. tostring(startError), true)
+	end
+end
+
+-- Register Auto Rejoin immediately. It is active before the UI appears.
+local autoRejoinConnection
+autoRejoinConnection = GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+	if not hubRunning or not moduleEnabled.AutoRejoin or rejoining then
+		return
+	end
+
+	if not errorMessage or errorMessage == "" then
+		return
+	end
+
+	rejoining = true
+	local capturedDelay = rejoinDelay
+
+	task.spawn(function()
+		for remaining = capturedDelay, 1, -1 do
+			if not hubRunning or not moduleEnabled.AutoRejoin or not rejoining then
+				return
+			end
+
+			earlySetStatus("Connection error. Rejoining in " .. tostring(remaining) .. "s.")
+			task.wait(1)
+		end
+
+		if not hubRunning or not moduleEnabled.AutoRejoin or not rejoining then
+			return
+		end
+
+		earlySetStatus("Rejoining now...")
+		local ok, err = pcall(function()
+			TeleportService:Teleport(game.PlaceId, player)
+		end)
+
+		if not ok then
+			rejoining = false
+			earlySetStatus("Rejoin failed: " .. tostring(err), true)
+		end
+	end)
+end)
+
+-- ============================================================
 -- UNIFIED TEB HUB UI
 -- One responsive window, sidebar navigation, central module pages.
 -- ============================================================
@@ -6750,6 +6819,10 @@ local function setStatus(text, isError)
 	statusBar.Text = tostring(text)
 	statusBar.TextColor3 = isError and Color3.fromRGB(255, 125, 125) or Color3.fromRGB(170, 215, 255)
 end
+
+-- From this point onward, early core-module messages also update the visible UI.
+earlySetStatus = setStatus
+setStatus(earlyStatusMessage, earlyStatusError)
 
 -- Dashboard cards
 local dashboardPage = pages.Dashboard
@@ -7186,41 +7259,7 @@ defaultButton.MouseButton1Click:Connect(function()
 	defaultButton.Active = true
 end)
 
-GuiService.ErrorMessageChanged:Connect(function(errorMessage)
-	if not hubRunning or not moduleEnabled.AutoRejoin or rejoining then
-		return
-	end
-	if not errorMessage or errorMessage == "" then
-		return
-	end
-
-	rejoining = true
-	local capturedDelay = rejoinDelay
-
-	task.spawn(function()
-		for remaining = capturedDelay, 1, -1 do
-			if not hubRunning or not moduleEnabled.AutoRejoin or not rejoining then
-				return
-			end
-			setStatus("Connection error. Rejoining in " .. tostring(remaining) .. "s.")
-			task.wait(1)
-		end
-
-		if not hubRunning or not moduleEnabled.AutoRejoin or not rejoining then
-			return
-		end
-
-		setStatus("Rejoining now...")
-		local ok, err = pcall(function()
-			TeleportService:Teleport(game.PlaceId, player)
-		end)
-
-		if not ok then
-			rejoining = false
-			setStatus("Rejoin failed: " .. tostring(err), true)
-		end
-	end)
-end)
+-- Auto Rejoin was registered before UI creation so it is active immediately.
 
 -- Drag the one unified window.
 do
@@ -7279,6 +7318,10 @@ closeButton.MouseButton1Click:Connect(function()
 	-- The minimize button and side toggle only hide/show the interface.
 	hubRunning = false
 	rejoining = false
+	if autoRejoinConnection then
+		autoRejoinConnection:Disconnect()
+		autoRejoinConnection = nil
+	end
 	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
 		stopModule(name)
 	end
@@ -7289,12 +7332,17 @@ refreshModuleVisuals()
 showPage("Dashboard")
 
 task.defer(function()
-	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
+	-- Optimizer already started before UI creation. Only optional modules start here.
+	for _, name in ipairs({"Bloom", "Mailer"}) do
 		if moduleEnabled[name] then
 			local shouldStart = true
 			moduleEnabled[name] = false
 			setModule(name, shouldStart)
 		end
+	end
+
+	if moduleEnabled.Optimizer then
+		mountModuleUI("Optimizer")
 	end
 end)
 
