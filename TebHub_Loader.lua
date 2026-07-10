@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.4"
+local TEB_HUB_VERSION = "1.1.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7323,23 +7323,17 @@ do
 	end)
 end
 
-local hubVisible = true
-
 local function setHubVisible(visible)
-	-- Presentation only:
-	-- Bloom, Mailer, Optimizer, and Auto Rejoin continue running unchanged.
-	-- Never call setModule(), stopModule(), Destroy(), or modify runtime flags here.
-	hubVisible = visible == true
-	main.Visible = hubVisible
+	main.Visible = visible == true
+	sideToggle.Visible = true
+	sideToggle.Active = true
+	sideToggle.ZIndex = 1000
 	sideToggle.Text = "TEB Hub"
 end
 
-minimizeButton.MouseButton1Click:Connect(function()
-	setHubVisible(false)
-end)
-
 sideToggle.MouseButton1Click:Connect(function()
-	setHubVisible(not hubVisible)
+	sideToggle.ZIndex = 1000
+	setHubVisible(not main.Visible)
 end)
 
 closeButton.MouseButton1Click:Connect(function()
@@ -7359,6 +7353,8 @@ end)
 
 refreshModuleVisuals()
 showPage("Dashboard")
+setHubVisible(true)
+sideToggle.Visible = true
 
 task.defer(function()
 	-- Optimizer already started before UI creation. Only optional modules start here.
