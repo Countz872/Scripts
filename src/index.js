@@ -6,6 +6,9 @@ const JSON_HEADERS = {
   "cache-control": "no-store",
 };
 
+const ALLOWED_SCOPES = new Set(["hub", "bloom", "mailer"]);
+const MAX_JSON_BYTES = 64 * 1024;
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -13,8 +16,8 @@ function json(data, status = 200) {
   });
 }
 
-async function hashSyncKey(key) {
-  const bytes = new TextEncoder().encode(key);
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
 
   return [...new Uint8Array(digest)]
@@ -22,106 +25,26 @@ async function hashSyncKey(key) {
     .join("");
 }
 
-function cleanBoolean(value, fallback = false) {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function cleanNumber(value, fallback, min, max) {
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return fallback;
+function validateScope(value) {
+  if (typeof value !== "string") {
+    return null;
   }
 
-  return Math.min(max, Math.max(min, number));
+  return ALLOWED_SCOPES.has(value) ? value : null;
 }
 
-function cleanSelections(value, allowedNames, defaults) {
-  const result = { ...defaults };
-
+function validateData(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return result;
+    throw new Error("Config data must be a JSON object.");
   }
 
-  for (const name of allowedNames) {
-    if (typeof value[name] === "boolean") {
-      result[name] = value[name];
-    }
+  const encoded = JSON.stringify(value);
+
+  if (encoded.length > MAX_JSON_BYTES) {
+    throw new Error("Config data is too large.");
   }
 
-  return result;
-}
-
-function sanitizeConfig(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Config data must be an object.");
-  }
-
-  const sprinklerNames = [
-    "Common Sprinkler",
-    "Uncommon Sprinkler",
-    "Rare Sprinkler",
-    "Legendary Sprinkler",
-    "Super Sprinkler",
-  ];
-
-  const wateringCanNames = [
-    "Common Watering Can",
-    "Super Watering Can",
-  ];
-
-  const defaultsSprinklers = Object.fromEntries(
-    sprinklerNames.map((name) => [
-      name,
-      name === "Super Sprinkler",
-    ]),
-  );
-
-  const defaultsCans = Object.fromEntries(
-    wateringCanNames.map((name) => [
-      name,
-      name === "Super Watering Can",
-    ]),
-  );
-
-  return {
-    version: 1,
-    masterEnabled: cleanBoolean(input.masterEnabled, true),
-    enabled: cleanBoolean(input.enabled, false),
-    kgThreshold: cleanNumber(input.kgThreshold, 93, 0, 1000000),
-    kgFilterEnabled: cleanBoolean(input.kgFilterEnabled, true),
-    kgMode: input.kgMode === "Below" ? "Below" : "Above",
-    ratioControlEnabled: cleanBoolean(
-      input.ratioControlEnabled,
-      true,
-    ),
-    startBelowRatio: cleanNumber(
-      input.startBelowRatio,
-      0.8,
-      0,
-      100,
-    ),
-    stopAboveRatio: cleanNumber(
-      input.stopAboveRatio,
-      0.85,
-      0,
-      100,
-    ),
-    selectedSprinklers: cleanSelections(
-      input.selectedSprinklers,
-      sprinklerNames,
-      defaultsSprinklers,
-    ),
-    selectedWateringCans: cleanSelections(
-      input.selectedWateringCans,
-      wateringCanNames,
-      defaultsCans,
-    ),
-    minimized: cleanBoolean(input.minimized, false),
-    uiX: cleanNumber(input.uiX, 4, -10000, 10000),
-    uiY: cleanNumber(input.uiY, 34, -10000, 10000),
-    savedAt: new Date().toISOString(),
-  };
+  return value;
 }
 
 export default {
@@ -144,10 +67,13 @@ export default {
 
     const url = new URL(request.url);
 
-    if (
-      url.pathname !== "/load" &&
-      url.pathname !== "/save"
-    ) {
+    const validPaths = new Set([
+      "/load",
+      "/save",
+      "/set-default",
+    ]);
+
+    if (!validPaths.has(url.pathname)) {
       return json(
         {
           ok: false,
@@ -172,6 +98,7 @@ export default {
     }
 
     const key = body?.key;
+    const scope = validateScope(body?.scope);
 
     if (
       typeof key !== "string" ||
@@ -181,48 +108,96 @@ export default {
       return json(
         {
           ok: false,
-          error: "Sync key must be 20-128 characters.",
+          error: "User key must be 20-128 characters.",
         },
         400,
       );
     }
 
-    const hashedKey = await hashSyncKey(key);
-    const storageKey = `config:${hashedKey}`;
+    if (!scope) {
+      return json(
+        {
+          ok: false,
+          error: "Invalid config scope.",
+        },
+        400,
+      );
+    }
+
+    const hashedKey = await sha256(key);
+
+    const userStorageKey =
+      `user:${hashedKey}:${scope}`;
+
+    const defaultStorageKey =
+      `default:${scope}`;
 
     try {
       if (url.pathname === "/load") {
-        const stored = await env.CONFIGS.get(
-          storageKey,
+        const userConfig = await env.CONFIGS.get(
+          userStorageKey,
           "json",
         );
 
-        if (!stored) {
+        if (userConfig) {
           return json({
             ok: true,
-            found: false,
-            data: null,
+            found: true,
+            source: "user",
+            data: userConfig,
+          });
+        }
+
+        const defaultConfig = await env.CONFIGS.get(
+          defaultStorageKey,
+          "json",
+        );
+
+        if (defaultConfig) {
+          return json({
+            ok: true,
+            found: true,
+            source: "default",
+            data: defaultConfig,
           });
         }
 
         return json({
           ok: true,
-          found: true,
-          data: stored,
+          found: false,
+          source: "none",
+          data: null,
         });
       }
 
-      const cleanConfig = sanitizeConfig(body?.data);
+      const cleanData = validateData(body?.data);
+
+      if (url.pathname === "/save") {
+        await env.CONFIGS.put(
+          userStorageKey,
+          JSON.stringify(cleanData),
+        );
+
+        return json({
+          ok: true,
+          saved: true,
+          scope,
+          source: "user",
+          savedAt: new Date().toISOString(),
+        });
+      }
 
       await env.CONFIGS.put(
-        storageKey,
-        JSON.stringify(cleanConfig),
+        defaultStorageKey,
+        JSON.stringify(cleanData),
       );
 
       return json({
         ok: true,
         saved: true,
-        savedAt: cleanConfig.savedAt,
+        scope,
+        source: "default",
+        savedAt: new Date().toISOString(),
       });
     } catch (error) {
       return json(
@@ -231,7 +206,7 @@ export default {
           error:
             error instanceof Error
               ? error.message
-              : "Storage failed.",
+              : "Storage operation failed.",
         },
         500,
       );
