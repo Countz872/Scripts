@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.9"
+local TEB_HUB_VERSION = "1.3.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2422,6 +2422,8 @@ local DEFAULT_PACKET_SEQUENCE_START_HEX = "3E"
 
 local RECIPIENT_PACKET_DELAY = 0.12
 local MAIL_BATCH_DELAY = 0.20
+local MAIL_SEND_VERIFY_TIMEOUT = 8
+local MAIL_SEND_VERIFY_INTERVAL = 0.25
 
 -- Your game has a real mail cooldown.
 -- This script waits this long between each mail packet.
@@ -5310,6 +5312,72 @@ local function markFruitsAsSent(fruits)
 	end
 end
 
+
+local function isFruitStillInInventory(fruit)
+	if not fruit then
+		return false
+	end
+
+	local instance = fruit.instance
+	if instance and instance.Parent and isTrackedInventoryInstance(instance) then
+		return true
+	end
+
+	if fruit.itemKey then
+		for cachedInstance, cachedData in pairs(fruitCache) do
+			if cachedInstance.Parent
+				and isTrackedInventoryInstance(cachedInstance)
+				and cachedData.itemKey == fruit.itemKey
+			then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function verifyBatchLeftInventory(batch, timeoutSeconds)
+	local startedAt = os.clock()
+	timeoutSeconds = tonumber(timeoutSeconds) or MAIL_SEND_VERIFY_TIMEOUT
+
+	while running and mailing and (os.clock() - startedAt) < timeoutSeconds do
+		rescanInventoryNow()
+
+		local removed = {}
+		local remaining = {}
+
+		for _, fruit in ipairs(batch) do
+			if isFruitStillInInventory(fruit) then
+				table.insert(remaining, fruit)
+			else
+				table.insert(removed, fruit)
+			end
+		end
+
+		if #remaining == 0 then
+			return true, removed, remaining
+		end
+
+		task.wait(MAIL_SEND_VERIFY_INTERVAL)
+	end
+
+	rescanInventoryNow()
+
+	local removed = {}
+	local remaining = {}
+
+	for _, fruit in ipairs(batch) do
+		if isFruitStillInInventory(fruit) then
+			table.insert(remaining, fruit)
+		else
+			table.insert(removed, fruit)
+		end
+	end
+
+	return #remaining == 0, removed, remaining
+end
+
 --// REFRESH / PREVIEW
 
 updateTargetFormattedLabel = function()
@@ -5875,35 +5943,80 @@ local function sendPlans(plans, reason)
 						task.wait(RECIPIENT_PACKET_DELAY)
 						Event:FireServer(buildFruitMailPacket(itemKeys, fruitPacketByte, userId))
 
-						-- Register this batch immediately. Optional allowance/cloud work
-						-- cannot interrupt the remaining mail queue.
+						addLog(
+							"Checking whether the selected fruits actually left inventory...",
+							Color3.fromRGB(170, 220, 255)
+						)
+
+						local fullyRemoved, removedFruits, remainingFruits =
+							verifyBatchLeftInventory(batch, MAIL_SEND_VERIFY_TIMEOUT)
+
+						if #removedFruits == 0 then
+							stoppedReason = serverDailyLimitReached
+								and "server daily gift limit reached"
+								or "mail rejected: fruits stayed in inventory"
+
+							addLog(
+								"Mail rejected. Nothing was counted because all fruits are still in inventory.",
+								Color3.fromRGB(255, 90, 90)
+							)
+
+							if debugTrace then
+								debugTrace(
+									"MAIL REJECTED | user=" .. tostring(username)
+										.. " | selected=" .. tostring(#batch)
+										.. " | remaining=" .. tostring(#remainingFruits)
+								)
+							end
+
+							mailing = false
+							break
+						end
+
+						local verifiedValue = getSelectionTotal(removedFruits)
+
 						needsCooldownBeforeNextMail = true
 						sentMails += 1
-						sentTotal += batchValue
-						sentCount += #batch
+						sentTotal += verifiedValue
+						sentCount += #removedFruits
 
-						for _, fruit in ipairs(batch) do
+						for _, fruit in ipairs(removedFruits) do
 							table.insert(sentFruits, fruit)
 						end
 
-						markFruitsAsSent(batch)
+						markFruitsAsSent(removedFruits)
 
 						local allowanceOk, usedAfter, remainingAfterAllowance = pcall(recordMailUsage)
 						if allowanceOk then
 							addLog(
 								string.format(
-									"Mail allowance: %d/%d used | %d left",
+									"Verified mail %d | %d fruit(s) removed | allowance %d/%d | %d left",
+									sentMails,
+									#removedFruits,
 									tonumber(usedAfter) or 0,
 									mailLimitCount,
 									tonumber(remainingAfterAllowance) or 0
 								),
-								Color3.fromRGB(170, 220, 255)
+								Color3.fromRGB(170, 255, 170)
 							)
 						else
 							addLog(
-								"Mail sent; allowance update failed: " .. tostring(usedAfter),
+								"Mail verified, but allowance update failed: " .. tostring(usedAfter),
 								Color3.fromRGB(255, 190, 90)
 							)
+						end
+
+						if not fullyRemoved then
+							addLog(
+								string.format(
+									"Partial result: %d sent, %d still in inventory. Queue stopped.",
+									#removedFruits,
+									#remainingFruits
+								),
+								Color3.fromRGB(255, 190, 90)
+							)
+							stoppedReason = "partial mail verification"
+							mailing = false
 						end
 
 						refreshUI()
@@ -7878,13 +7991,16 @@ local function mountModuleUI(moduleName)
 			return
 		end
 
+		moduleGui.Enabled = false
 		normalizeMountedFrame(moduleName, frame)
 
-		-- Keep the backing ScreenGui alive and enabled after moving its visible
-		-- frame into TEB Hub. Module runtimes are controlled only by their own
-		-- runtime flags, never by hub visibility or mounted UI visibility.
-		moduleGui.Enabled = true
+		for _, child in ipairs(moduleGui:GetChildren()) do
+			if child:IsA("GuiObject") then
+				child.Visible = false
+			end
+		end
 
+		moduleGui.Enabled = false
 		setStatus(moduleName .. " controls mounted inside TEB Hub.")
 	end)
 end
@@ -7916,6 +8032,13 @@ local function setModule(name, wanted)
 		else
 			moduleEnabled[name] = true
 			setStatus(name .. " started.")
+
+			local guiName = moduleGuiNames[name]
+			local standaloneGui = guiName and playerGui:FindFirstChild(guiName)
+			if standaloneGui and standaloneGui:IsA("ScreenGui") then
+				standaloneGui.Enabled = false
+			end
+
 			mountModuleUI(name)
 		end
 	else
