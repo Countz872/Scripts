@@ -98,7 +98,7 @@ Example loader:
 
 ```lua
 loadstring(game:HttpGet(
-    "[https://raw.githubusercontent.com/Countz872/Scripts/refs/heads/main/TebHub_Loader.lua](https://raw.githubusercontent.com/Countz872/Scripts/refs/heads/main/TebHub_Loader.lua)"
+   "https://raw.githubusercontent.com/Countz872/Scripts/refs/heads/main/TebHub_Loader.lua"
 ))()
 ```
 
