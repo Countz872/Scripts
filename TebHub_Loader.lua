@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.0"
+local TEB_HUB_VERSION = "1.2.1"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -4110,53 +4110,76 @@ loadRecipientsFromBox = function()
 		table.insert(loadedRecipients, recipientData)
 
 		local function updateCardAmount()
-			local value = parseUserNumber(amountBox.Text)
+			if targetMode == "Fruit" then
+				local count = math.floor(tonumber(cleanNumberText(amountBox.Text)) or 0)
 
-			if value and value > 0 then
-				amountLabel.Text = "target: " .. formatShortNumber(value)
-				amountLabel.TextColor3 = Color3.fromRGB(180, 180, 185)
+				if count > 0 then
+					amountLabel.Text = "target: " .. tostring(count) .. " fruits"
+					amountLabel.TextColor3 = Color3.fromRGB(180, 180, 185)
+				else
+					amountLabel.Text = "target: invalid"
+					amountLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+				end
 			else
-				amountLabel.Text = "target: invalid"
-				amountLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+				local value = parseUserNumber(amountBox.Text)
+
+				if value and value > 0 then
+					amountLabel.Text = "target: " .. formatShortNumber(value)
+					amountLabel.TextColor3 = Color3.fromRGB(180, 180, 185)
+				else
+					amountLabel.Text = "target: invalid"
+					amountLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+				end
 			end
 		end
 
 		amountBox:GetPropertyChangedSignal("Text"):Connect(updateCardAmount)
 
 		amountBox.FocusLost:Connect(function()
-			local value = parseUserNumber(amountBox.Text)
+			if targetMode == "Fruit" then
+				local count = math.floor(tonumber(cleanNumberText(amountBox.Text)) or 0)
+				amountBox.Text = tostring(count > 0 and count or getDefaultFruitTargetCount())
+			else
+				local value = parseUserNumber(amountBox.Text)
 
-			if value and value > 0 then
-				amountBox.Text = formatShortNumber(value)
+				if value and value > 0 then
+					amountBox.Text = formatShortNumber(value)
+				end
 			end
 
 			updateCardAmount()
+			queueMailerCloudSave()
 		end)
 
 		updateCardAmount()
 
 		task.spawn(function()
-			local ok, result = pcall(function()
-				local userId = getUserIdFromUsername(username)
-				local thumb = Players:GetUserThumbnailAsync(
-					userId,
-					Enum.ThumbnailType.AvatarBust,
-					Enum.ThumbnailSize.Size100x100
-				)
+			local finished = false
 
-				return {
-					UserId = userId,
-					Thumbnail = thumb,
-				}
+			task.delay(12, function()
+				if finished or not card.Parent then
+					return
+				end
+
+				finished = true
+				nameLabel.Text = username .. "\nlookup timed out"
+				nameLabel.TextColor3 = Color3.fromRGB(255, 190, 100)
+				addLog(
+					"Timed out loading " .. username .. ". Check the username and try again.",
+					Color3.fromRGB(255, 190, 100)
+				)
 			end)
 
-			if ok and result then
-				img.Image = result.Thumbnail
-				recipientData.UserId = result.UserId
-				nameLabel.Text = username .. "\n" .. tostring(result.UserId)
+			local userOk, userIdOrError = pcall(function()
+				return getUserIdFromUsername(username)
+			end)
 
-				addLog("Loaded " .. username .. ". Set amount on the avatar card.", Color3.fromRGB(170, 255, 170))
-			else
+			if finished or not card.Parent then
+				return
+			end
+
+			if not userOk or not tonumber(userIdOrError) then
+				finished = true
 				nameLabel.Text = username .. "\nnot found"
 				nameLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
 				loadedRecipientMap[mapKey] = nil
@@ -4170,8 +4193,40 @@ loadRecipientsFromBox = function()
 				end
 
 				card:Destroy()
-				addLog("Failed to load " .. username .. ": " .. tostring(result), Color3.fromRGB(255, 120, 120))
+				addLog(
+					"Failed to load " .. username .. ": " .. tostring(userIdOrError),
+					Color3.fromRGB(255, 120, 120)
+				)
+				return
 			end
+
+			local resolvedUserId = tonumber(userIdOrError)
+			recipientData.UserId = resolvedUserId
+			nameLabel.Text = username .. "\n" .. tostring(resolvedUserId)
+			nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+
+			-- Mark the recipient loaded before requesting the avatar.
+			-- Avatar delivery can fail or be slow without blocking mailing.
+			finished = true
+			addLog(
+				"Loaded " .. username .. ". Set the target on the avatar card.",
+				Color3.fromRGB(170, 255, 170)
+			)
+
+			task.spawn(function()
+				local thumbnailOk, thumbnailOrError = pcall(function()
+					local thumbnail = Players:GetUserThumbnailAsync(
+						resolvedUserId,
+						Enum.ThumbnailType.AvatarBust,
+						Enum.ThumbnailSize.Size100x100
+					)
+					return thumbnail
+				end)
+
+				if thumbnailOk and type(thumbnailOrError) == "string" and img.Parent then
+					img.Image = thumbnailOrError
+				end
+			end)
 		end)
 	end
 end
