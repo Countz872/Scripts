@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.4"
+local TEB_HUB_VERSION = "1.3.5"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2443,16 +2443,10 @@ local DEFAULT_TARGET_VALUE = "1B"
 local DEFAULT_TARGET_FRUIT_COUNT = 20
 local targetMode = "Value" -- "Value" or "Fruit"
 
+-- Do not perform a network request during module startup.
+-- The unified hub loads this scope in the background after the Mailer has
+-- registered its lifecycle and mounted its UI.
 local mailerCloudData = nil
-if type(_G.TEBCloudLoadScope) == "function" then
-	local loaded = _G.TEBCloudLoadScope("mailer")
-	if type(loaded) == "table" then
-		mailerCloudData = loaded
-		if loaded.targetMode == "Value" or loaded.targetMode == "Fruit" then
-			targetMode = loaded.targetMode
-		end
-	end
-end
 
 local mailLimitCount = math.max(
 	1,
@@ -6259,6 +6253,61 @@ end
 _G.TEBHubCloudSections = _G.TEBHubCloudSections or {}
 _G.TEBHubCloudSections.Mailer = {
 	Get = buildMailerCloudSettings,
+	Apply = function(data)
+		if type(data) ~= "table" then
+			return false
+		end
+
+		if data.targetMode == "Value" or data.targetMode == "Fruit" then
+			targetMode = data.targetMode
+		end
+
+		if type(data.recipients) == "string" then
+			recipientBox.Text = data.recipients
+		end
+
+		if type(data.valueTarget) == "string" or type(data.valueTarget) == "number" then
+			targetBox.Text = tostring(data.valueTarget)
+		end
+
+		if type(data.packetSequence) == "string" or type(data.packetSequence) == "number" then
+			seqBox.Text = tostring(data.packetSequence)
+		end
+
+		local loadedFruitCount = math.floor(tonumber(data.fruitCount) or 0)
+		if loadedFruitCount > 0 then
+			fruitCountBox.Text = tostring(loadedFruitCount)
+		end
+
+		local loadedLimitCount = math.floor(tonumber(data.mailLimitCount) or 0)
+		if loadedLimitCount > 0 then
+			mailLimitCount = loadedLimitCount
+		end
+
+		local loadedWindow = tonumber(data.mailLimitWindowHours)
+		if loadedWindow and loadedWindow > 0 then
+			mailLimitWindowHours = loadedWindow
+		end
+
+		if type(data.mailUsageTimestamps) == "table" then
+			table.clear(mailUsageTimestamps)
+
+			for _, timestamp in ipairs(data.mailUsageTimestamps) do
+				timestamp = tonumber(timestamp)
+				if timestamp then
+					table.insert(mailUsageTimestamps, timestamp)
+				end
+			end
+		end
+
+		pruneMailUsage()
+		updateTargetModeUI()
+		updateTargetFormattedLabel()
+		updateMailLimitDisplay()
+		refreshUI()
+
+		return true
+	end,
 }
 
 local function updateMailLimitDisplay()
@@ -7337,6 +7386,44 @@ local function executeModule(name)
 
 		if module and moduleGui then
 			moduleGui.Enabled = false
+
+			task.spawn(function()
+				local scope = name == "Bloom" and "bloom"
+					or name == "Mailer" and "mailer"
+					or nil
+
+				if not scope or type(_G.TEBCloudLoadScope) ~= "function" then
+					return
+				end
+
+				local data, source, loadError = _G.TEBCloudLoadScope(scope)
+				local section = _G.TEBHubCloudSections
+					and _G.TEBHubCloudSections[name]
+
+				if type(data) == "table"
+					and section
+					and type(section.Apply) == "function"
+				then
+					local ok, applyError = pcall(section.Apply, data)
+
+					if not ok then
+						warn(
+							"[TEB Hub] Failed applying "
+								.. name
+								.. " cloud settings:",
+							applyError
+						)
+					end
+				elseif loadError then
+					warn(
+						"[TEB Hub] "
+							.. name
+							.. " cloud load failed:",
+						loadError
+					)
+				end
+			end)
+
 			return true
 		end
 
@@ -7347,7 +7434,11 @@ local function executeModule(name)
 		return false, "Runtime error: " .. tostring(runtimeError)
 	end
 
-	return false, name .. " did not finish starting within " .. tostring(timeoutSeconds) .. " seconds."
+	return false,
+		name
+			.. " did not register its runtime/UI within "
+			.. tostring(timeoutSeconds)
+			.. " seconds. Cloud loading is not blocking startup."
 end
 
 local function stopModule(name)
