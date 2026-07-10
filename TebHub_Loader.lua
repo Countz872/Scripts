@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.8"
+local TEB_HUB_VERSION = "1.2.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2412,8 +2412,11 @@ local MAIL_BATCH_DELAY = 0.20
 -- This script waits this long between each mail packet.
 local MAIL_COOLDOWN_SECONDS = 10.75
 
+-- Rolling mail allowance. The exact game reset window can be changed in the UI.
+local DEFAULT_MAIL_LIMIT_COUNT = 50
+local DEFAULT_MAIL_LIMIT_WINDOW_HOURS = 24
+
 local DEFAULT_TARGET_VALUE = "1B"
-local DEFAULT_TARGET_FRUIT = "Moon Bloom"
 local DEFAULT_TARGET_FRUIT_COUNT = 20
 local targetMode = "Value" -- "Value" or "Fruit"
 
@@ -2426,6 +2429,68 @@ if type(_G.TEBCloudLoadScope) == "function" then
 			targetMode = loaded.targetMode
 		end
 	end
+end
+
+local mailLimitCount = math.max(
+	1,
+	math.floor(tonumber(mailerCloudData and mailerCloudData.mailLimitCount) or DEFAULT_MAIL_LIMIT_COUNT)
+)
+
+local mailLimitWindowHours = math.max(
+	1,
+	tonumber(mailerCloudData and mailerCloudData.mailLimitWindowHours) or DEFAULT_MAIL_LIMIT_WINDOW_HOURS
+)
+
+local mailUsageTimestamps = {}
+
+if mailerCloudData and type(mailerCloudData.mailUsageTimestamps) == "table" then
+	for _, timestamp in ipairs(mailerCloudData.mailUsageTimestamps) do
+		timestamp = tonumber(timestamp)
+		if timestamp then
+			table.insert(mailUsageTimestamps, timestamp)
+		end
+	end
+end
+
+local function pruneMailUsage(now)
+	now = tonumber(now) or os.time()
+	local cutoff = now - (mailLimitWindowHours * 3600)
+	local kept = {}
+
+	for _, timestamp in ipairs(mailUsageTimestamps) do
+		if tonumber(timestamp) and timestamp > cutoff and timestamp <= now + 300 then
+			table.insert(kept, timestamp)
+		end
+	end
+
+	table.sort(kept)
+	mailUsageTimestamps = kept
+	return #mailUsageTimestamps
+end
+
+local function getMailLimitState()
+	local now = os.time()
+	local used = pruneMailUsage(now)
+	local remaining = math.max(0, mailLimitCount - used)
+	local resetIn = 0
+
+	if used > 0 then
+		resetIn = math.max(0, (mailUsageTimestamps[1] + (mailLimitWindowHours * 3600)) - now)
+	end
+
+	return used, remaining, resetIn
+end
+
+local function formatDuration(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	local hours = math.floor(seconds / 3600)
+	local minutes = math.floor((seconds % 3600) / 60)
+
+	if hours > 0 then
+		return string.format("%dh %dm", hours, minutes)
+	end
+
+	return string.format("%dm", minutes)
 end
 local FALLBACK_SELL_MULTI = 1
 
@@ -3096,46 +3161,103 @@ fruitModeButton.TextSize = 10
 fruitModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 fruitModeButton.Parent = content
 
-local fruitTargetLabel = Instance.new("TextLabel")
-fruitTargetLabel.Size = UDim2.fromOffset(58, 24)
-fruitTargetLabel.Position = UDim2.fromOffset(0, 174)
-fruitTargetLabel.BackgroundTransparency = 1
-fruitTargetLabel.Text = "Fruit:"
-fruitTargetLabel.Font = Enum.Font.GothamBold
-fruitTargetLabel.TextSize = 10
-fruitTargetLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-fruitTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
-fruitTargetLabel.Parent = content
-
-local fruitNameBox = Instance.new("TextBox")
-fruitNameBox.Name = "TargetFruitName"
-fruitNameBox.Size = UDim2.new(1, -150, 0, 24)
-fruitNameBox.Position = UDim2.fromOffset(48, 174)
-fruitNameBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
-fruitNameBox.BorderSizePixel = 0
-fruitNameBox.Text = mailerCloudData and tostring(mailerCloudData.fruitName or DEFAULT_TARGET_FRUIT) or DEFAULT_TARGET_FRUIT
-fruitNameBox.PlaceholderText = "Fruit name"
-fruitNameBox.Font = Enum.Font.Gotham
-fruitNameBox.TextSize = 10
-fruitNameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-fruitNameBox.ClearTextOnFocus = false
-fruitNameBox.Parent = content
+local fruitCountLabel = Instance.new("TextLabel")
+fruitCountLabel.Size = UDim2.fromOffset(92, 24)
+fruitCountLabel.Position = UDim2.fromOffset(0, 174)
+fruitCountLabel.BackgroundTransparency = 1
+fruitCountLabel.Text = "Target fruits:"
+fruitCountLabel.Font = Enum.Font.GothamBold
+fruitCountLabel.TextSize = 10
+fruitCountLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+fruitCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+fruitCountLabel.Parent = content
 
 local fruitCountBox = Instance.new("TextBox")
 fruitCountBox.Name = "TargetFruitCount"
-fruitCountBox.Size = UDim2.fromOffset(96, 24)
-fruitCountBox.Position = UDim2.new(1, -96, 0, 174)
+fruitCountBox.Size = UDim2.fromOffset(110, 24)
+fruitCountBox.Position = UDim2.fromOffset(92, 174)
 fruitCountBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 fruitCountBox.BorderSizePixel = 0
-fruitCountBox.Text = tostring(mailerCloudData and tonumber(mailerCloudData.fruitCount) or DEFAULT_TARGET_FRUIT_COUNT)
-fruitCountBox.PlaceholderText = "Fruit count"
+fruitCountBox.Text = tostring(
+	mailerCloudData and tonumber(mailerCloudData.fruitCount)
+	or DEFAULT_TARGET_FRUIT_COUNT
+)
+fruitCountBox.PlaceholderText = "100"
 fruitCountBox.Font = Enum.Font.GothamBold
 fruitCountBox.TextSize = 10
 fruitCountBox.TextColor3 = Color3.fromRGB(255, 220, 120)
 fruitCountBox.ClearTextOnFocus = false
 fruitCountBox.Parent = content
 
-for _, object in ipairs({ valueModeButton, fruitModeButton, fruitNameBox, fruitCountBox }) do
+local fruitCountHint = Instance.new("TextLabel")
+fruitCountHint.Size = UDim2.new(1, -214, 0, 24)
+fruitCountHint.Position = UDim2.fromOffset(214, 174)
+fruitCountHint.BackgroundTransparency = 1
+fruitCountHint.Text = "any harvested fruits"
+fruitCountHint.Font = Enum.Font.Gotham
+fruitCountHint.TextSize = 9
+fruitCountHint.TextColor3 = Color3.fromRGB(165, 175, 205)
+fruitCountHint.TextXAlignment = Enum.TextXAlignment.Left
+fruitCountHint.Parent = content
+
+for _, object in ipairs({ valueModeButton, fruitModeButton, fruitCountBox }) do
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 7)
+	c.Parent = object
+end
+
+local mailLimitLabel = Instance.new("TextLabel")
+mailLimitLabel.Size = UDim2.fromOffset(82, 24)
+mailLimitLabel.Position = UDim2.fromOffset(0, 204)
+mailLimitLabel.BackgroundTransparency = 1
+mailLimitLabel.Text = "Mail limit:"
+mailLimitLabel.Font = Enum.Font.GothamBold
+mailLimitLabel.TextSize = 10
+mailLimitLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+mailLimitLabel.TextXAlignment = Enum.TextXAlignment.Left
+mailLimitLabel.Parent = content
+
+local mailLimitCountBox = Instance.new("TextBox")
+mailLimitCountBox.Name = "MailLimitCount"
+mailLimitCountBox.Size = UDim2.fromOffset(48, 24)
+mailLimitCountBox.Position = UDim2.fromOffset(70, 204)
+mailLimitCountBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
+mailLimitCountBox.BorderSizePixel = 0
+mailLimitCountBox.Text = tostring(mailLimitCount)
+mailLimitCountBox.PlaceholderText = "50"
+mailLimitCountBox.Font = Enum.Font.GothamBold
+mailLimitCountBox.TextSize = 10
+mailLimitCountBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+mailLimitCountBox.ClearTextOnFocus = false
+mailLimitCountBox.Parent = content
+addCorner = addCorner
+
+local mailWindowBox = Instance.new("TextBox")
+mailWindowBox.Name = "MailLimitHours"
+mailWindowBox.Size = UDim2.fromOffset(52, 24)
+mailWindowBox.Position = UDim2.fromOffset(124, 204)
+mailWindowBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
+mailWindowBox.BorderSizePixel = 0
+mailWindowBox.Text = tostring(mailLimitWindowHours)
+mailWindowBox.PlaceholderText = "24"
+mailWindowBox.Font = Enum.Font.GothamBold
+mailWindowBox.TextSize = 10
+mailWindowBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+mailWindowBox.ClearTextOnFocus = false
+mailWindowBox.Parent = content
+
+local mailLimitStatus = Instance.new("TextLabel")
+mailLimitStatus.Size = UDim2.new(1, -184, 0, 24)
+mailLimitStatus.Position = UDim2.fromOffset(184, 204)
+mailLimitStatus.BackgroundTransparency = 1
+mailLimitStatus.Text = "0/50 used"
+mailLimitStatus.Font = Enum.Font.Code
+mailLimitStatus.TextSize = 9
+mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
+mailLimitStatus.TextXAlignment = Enum.TextXAlignment.Left
+mailLimitStatus.Parent = content
+
+for _, object in ipairs({mailLimitCountBox, mailWindowBox}) do
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, 7)
 	c.Parent = object
@@ -3144,7 +3266,7 @@ end
 local avatarFrame = Instance.new("ScrollingFrame")
 avatarFrame.Name = "Avatars"
 avatarFrame.Size = UDim2.new(1, 0, 0, 54)
-avatarFrame.Position = UDim2.fromOffset(0, 208)
+avatarFrame.Position = UDim2.fromOffset(0, 238)
 avatarFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 avatarFrame.BorderSizePixel = 0
 avatarFrame.ScrollBarThickness = 4
@@ -3173,7 +3295,7 @@ avatarLayout.Parent = avatarFrame
 local previewLabel = Instance.new("TextLabel")
 previewLabel.Name = "PreviewText"
 previewLabel.Size = UDim2.new(1, 0, 0, 96)
-previewLabel.Position = UDim2.fromOffset(0, 268)
+previewLabel.Position = UDim2.fromOffset(0, 298)
 previewLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
 previewLabel.BorderSizePixel = 0
 previewLabel.Text = "Preview: none"
@@ -3199,7 +3321,7 @@ previewCorner.Parent = previewLabel
 local progressTitle = Instance.new("TextLabel")
 progressTitle.Name = "ProgressTitle"
 progressTitle.Size = UDim2.new(1, 0, 0, 18)
-progressTitle.Position = UDim2.fromOffset(0, 370)
+progressTitle.Position = UDim2.fromOffset(0, 400)
 progressTitle.BackgroundTransparency = 1
 progressTitle.Text = "Mail Progress"
 progressTitle.Font = Enum.Font.GothamBold
@@ -3211,7 +3333,7 @@ progressTitle.Parent = content
 local progressFrame = Instance.new("ScrollingFrame")
 progressFrame.Name = "Progress"
 progressFrame.Size = UDim2.new(1, 0, 0, 58)
-progressFrame.Position = UDim2.fromOffset(0, 390)
+progressFrame.Position = UDim2.fromOffset(0, 420)
 progressFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
 progressFrame.BorderSizePixel = 0
 progressFrame.ScrollBarThickness = 5
@@ -3238,7 +3360,7 @@ progressLayout.Parent = progressFrame
 local historyTitle = Instance.new("TextLabel")
 historyTitle.Name = "HistoryTitle"
 historyTitle.Size = UDim2.new(1, 0, 0, 18)
-historyTitle.Position = UDim2.fromOffset(0, 454)
+historyTitle.Position = UDim2.fromOffset(0, 484)
 historyTitle.BackgroundTransparency = 1
 historyTitle.Text = "Trade History"
 historyTitle.Font = Enum.Font.GothamBold
@@ -3250,7 +3372,7 @@ historyTitle.Parent = content
 local historyFrame = Instance.new("ScrollingFrame")
 historyFrame.Name = "History"
 historyFrame.Size = UDim2.new(1, 0, 0, 330)
-historyFrame.Position = UDim2.fromOffset(0, 476)
+historyFrame.Position = UDim2.fromOffset(0, 506)
 historyFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
 historyFrame.BorderSizePixel = 0
 historyFrame.ScrollBarThickness = 6
@@ -3277,7 +3399,7 @@ historyLayout.Parent = historyFrame
 local logFrame = Instance.new("ScrollingFrame")
 logFrame.Name = "Logs"
 logFrame.Size = UDim2.new(1, 0, 0, 120)
-logFrame.Position = UDim2.fromOffset(0, 822)
+logFrame.Position = UDim2.fromOffset(0, 852)
 logFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
 logFrame.BorderSizePixel = 0
 logFrame.ScrollBarThickness = 6
@@ -3953,8 +4075,8 @@ loadRecipientsFromBox = function()
 		amountBox.Position = UDim2.new(1, -61, 0, 4)
 		amountBox.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
 		amountBox.BorderSizePixel = 0
-		amountBox.Text = targetBox.Text ~= "" and targetBox.Text or DEFAULT_TARGET_VALUE
-		amountBox.PlaceholderText = "1B"
+		amountBox.Text = targetMode == "Fruit" and tostring(getDefaultFruitTargetCount()) or (targetBox.Text ~= "" and targetBox.Text or DEFAULT_TARGET_VALUE)
+		amountBox.PlaceholderText = targetMode == "Fruit" and "20" or "1B"
 		amountBox.Font = Enum.Font.GothamBold
 		amountBox.TextSize = 9
 		amountBox.TextColor3 = Color3.fromRGB(255, 220, 120)
@@ -4932,45 +5054,29 @@ local function getRecipientTargetValue(recipient, defaultTargetValue)
 	return defaultTargetValue
 end
 
-local function getFruitTargetSettings()
-	local fruitName = tostring(fruitNameBox.Text or ""):match("^%s*(.-)%s*$")
-	local fruitCount = math.floor(tonumber(fruitCountBox.Text) or 0)
-
-	if fruitName == "" then
-		return nil, nil, "Enter a target fruit name."
-	end
-
-	if fruitCount <= 0 then
-		return nil, nil, "Fruit target count must be above 0."
-	end
-
-	return fruitName, fruitCount
+local function getDefaultFruitTargetCount()
+	local count = math.floor(tonumber(fruitCountBox.Text) or 0)
+	return count > 0 and count or DEFAULT_TARGET_FRUIT_COUNT
 end
 
-local function fruitMatchesTarget(fruit, targetName)
-	local fruitName = normalizeName(fruit and fruit.fruitName or "")
-	local wanted = normalizeName(targetName)
-
-	if wanted == "" then
-		return false
+local function getRecipientFruitTargetCount(recipient, defaultCount)
+	if recipient.TargetInput then
+		local count = math.floor(tonumber(cleanNumberText(recipient.TargetInput.Text)) or 0)
+		return count > 0 and count or nil
 	end
-
-	return fruitName == wanted or fruitName:find(wanted, 1, true) ~= nil
+	return defaultCount
 end
 
-local function getMatchingFruitPool(source, targetName, usedSet)
+local function getAvailableFruitPool(source, usedSet)
 	local result = {}
-
 	for _, fruit in ipairs(source) do
-		if fruit.itemKey and (not usedSet or not usedSet[fruit.itemKey]) and fruitMatchesTarget(fruit, targetName) then
+		if fruit.itemKey and (not usedSet or not usedSet[fruit.itemKey]) then
 			table.insert(result, fruit)
 		end
 	end
-
 	table.sort(result, function(a, b)
 		return (a.baseValue or 0) > (b.baseValue or 0)
 	end)
-
 	return result
 end
 
@@ -4987,17 +5093,7 @@ end
 local function makePreview()
 	local recipients = getRecipientsForPlanning()
 	local targetValue = getDefaultTargetValue()
-	local targetFruit, targetFruitCount, fruitTargetError
-
-	if targetMode == "Fruit" then
-		targetFruit, targetFruitCount, fruitTargetError = getFruitTargetSettings()
-
-		if fruitTargetError then
-			previewLabel.Text = "Preview: " .. fruitTargetError
-			previewLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-			return nil
-		end
-	end
+	local targetFruitCount = targetMode == "Fruit" and getDefaultFruitTargetCount() or nil
 
 	if #recipients == 0 then
 		previewLabel.Text = "Preview: enter at least one username."
@@ -5028,11 +5124,22 @@ local function makePreview()
 		}
 
 		if targetMode == "Fruit" then
-			local pool = getMatchingFruitPool(available, targetFruit, tempUsed)
-			selected, selectedTotal = takeFruitCount(pool, targetFruitCount)
-			reason = #selected >= targetFruitCount and "fruit count ready" or (LIVE_REFILL_MAILING and "sending matches, then waiting refill" or "not enough matching fruits")
-			plan.TargetFruit = targetFruit
-			plan.TargetCount = targetFruitCount
+			local recipientCount = getRecipientFruitTargetCount(recipient, targetFruitCount)
+
+			if not recipientCount or recipientCount <= 0 then
+				plan.Reason = "invalid user fruit count"
+				plan.TargetCount = 0
+				plan.Skipped = true
+				table.insert(previewPlans, plan)
+				continue
+			end
+
+			local pool = getAvailableFruitPool(available, tempUsed)
+			selected, selectedTotal = takeFruitCount(pool, recipientCount)
+			reason = #selected >= recipientCount
+				and "fruit count ready"
+				or (LIVE_REFILL_MAILING and "sending current fruits, then waiting refill" or "not enough fruits")
+			plan.TargetCount = recipientCount
 			plan.Target = selectedTotal
 		else
 			local recipientTarget = getRecipientTargetValue(recipient, targetValue)
@@ -5099,13 +5206,24 @@ local function makePreview()
 	end
 
 	local previewLines = {}
+	local usedMails, remainingMails, resetIn = getMailLimitState()
+
+	table.insert(
+		previewLines,
+		string.format(
+			"Mail allowance: %d/%d used | %d left%s",
+			usedMails,
+			mailLimitCount,
+			remainingMails,
+			remainingMails <= 0 and (" | reset in " .. formatDuration(resetIn)) or ""
+		)
+	)
 
 	if targetMode == "Fruit" then
 		table.insert(
 			previewLines,
 			string.format(
-				"Fruit preview — %s x%d per account | Total base %s",
-				targetFruit,
+				"Fruit-count preview — default %d per account | Total base %s",
 				targetFruitCount,
 				formatShortNumber(totalSelected)
 			)
@@ -5244,18 +5362,23 @@ local function selectLiveRefillBatch(remainingTarget)
 	return {}, totalAvailable, "below target and partial sending disabled"
 end
 
-local function selectLiveFruitBatch(targetName, remainingCount)
+local function selectLiveFruitBatch(remainingCount)
 	rescanInventoryNow()
 	local available = getCachedFruitsArray(true, true)
-	local matching = getMatchingFruitPool(available, targetName)
 
-	if #matching == 0 then
-		return {}, 0, "no matching fruits"
+	if #available == 0 then
+		return {}, 0, "no current fruits"
 	end
 
-	local amount = math.min(remainingCount, MAX_FRUITS_PER_MAIL, #matching)
-	local selected, selectedTotal = takeFruitCount(matching, amount)
-	return selected, selectedTotal, #selected >= remainingCount and "fruit target ready" or "partial matching batch"
+	table.sort(available, function(a, b)
+		return (a.baseValue or 0) > (b.baseValue or 0)
+	end)
+
+	local amount = math.min(remainingCount, MAX_FRUITS_PER_MAIL, #available)
+	local selected, selectedTotal = takeFruitCount(available, amount)
+
+	return selected, selectedTotal,
+		#selected >= remainingCount and "fruit target ready" or "partial fruit batch"
 end
 
 --// MAILING
@@ -5267,6 +5390,22 @@ local function sendPlans(plans, reason)
 	end
 	if not plans or #plans == 0 then
 		addLog("No mail plans to send.", Color3.fromRGB(255, 120, 120))
+		return
+	end
+
+	local usedMails, remainingMails, resetIn = getMailLimitState()
+	if remainingMails <= 0 then
+		addLog(
+			string.format(
+				"Mail limit reached: %d/%d in %.1f hours. Reset in %s.",
+				usedMails,
+				mailLimitCount,
+				mailLimitWindowHours,
+				formatDuration(resetIn)
+			),
+			Color3.fromRGB(255, 120, 120)
+		)
+		updateMailLimitDisplay()
 		return
 	end
 
@@ -5295,11 +5434,10 @@ local function sendPlans(plans, reason)
 				local mode = plan.Mode or "Value"
 				local targetValue = plan.Target or 0
 				local targetCount = plan.TargetCount or 0
-				local targetFruit = plan.TargetFruit
-
+				
 				if mode == "Fruit" then
-					if not targetFruit or targetCount <= 0 then
-						addLog("Skipped " .. username .. ": invalid fruit target.", Color3.fromRGB(255, 120, 120))
+					if targetCount <= 0 then
+						addLog("Skipped " .. username .. ": invalid fruit-count target.", Color3.fromRGB(255, 120, 120))
 						continue
 					end
 				elseif targetValue <= 0 then
@@ -5312,8 +5450,8 @@ local function sendPlans(plans, reason)
 				local stoppedReason = "completed"
 
 				if mode == "Fruit" then
-					addLog(string.format("Fruit mailing to %s | %s x%d.", username, targetFruit, targetCount), Color3.fromRGB(170, 220, 255))
-					updateProgressValueRow(username, 0, targetCount, 0, "0 " .. targetFruit, Color3.fromRGB(90, 180, 110))
+					addLog(string.format("Fruit-count mailing to %s | target %d fruits.", username, targetCount), Color3.fromRGB(170, 220, 255))
+					updateProgressValueRow(username, 0, targetCount, 0, "0 fruits", Color3.fromRGB(90, 180, 110))
 				else
 					addLog("Value mailing to " .. username .. " | target " .. formatShortNumber(targetValue) .. ".", Color3.fromRGB(170, 220, 255))
 					updateProgressValueRow(username, 0, targetValue, 0, "starting", Color3.fromRGB(90, 180, 110))
@@ -5322,14 +5460,14 @@ local function sendPlans(plans, reason)
 				while mailing and ((mode == "Fruit" and sentCount < targetCount) or (mode == "Value" and sentTotal < targetValue)) do
 					local selected, selectedTotal
 					if mode == "Fruit" then
-						selected, selectedTotal = selectLiveFruitBatch(targetFruit, targetCount - sentCount)
+						selected, selectedTotal = selectLiveFruitBatch(targetCount - sentCount)
 					else
 						selected, selectedTotal = selectLiveRefillBatch(targetValue - sentTotal)
 					end
 
 					if not selected or #selected == 0 then
 						if not LIVE_REFILL_MAILING then
-							stoppedReason = mode == "Fruit" and "no matching fruits" or "no current fruits"
+							stoppedReason = "no current fruits"
 							break
 						end
 
@@ -5346,6 +5484,20 @@ local function sendPlans(plans, reason)
 
 					for _, batch in ipairs(splitIntoBatches(selected, MAX_FRUITS_PER_MAIL)) do
 						if not mailing then break end
+
+						local usedNow, remainingNow, resetNow = getMailLimitState()
+						if remainingNow <= 0 then
+							stoppedReason = string.format(
+								"mail limit reached (%d/%d); reset in %s",
+								usedNow,
+								mailLimitCount,
+								formatDuration(resetNow)
+							)
+							mailing = false
+							updateMailLimitDisplay()
+							break
+						end
+
 						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
 						local itemKeys = getItemKeysFromBatch(batch)
 						if #itemKeys == 0 then stoppedReason = "selected batch had no item keys" break end
@@ -5360,6 +5512,7 @@ local function sendPlans(plans, reason)
 						Event:FireServer(buildRecipientPacket(username, recipientByte))
 						task.wait(RECIPIENT_PACKET_DELAY)
 						Event:FireServer(buildFruitMailPacket(itemKeys, fruitPacketByte, userId))
+						recordMailUsage()
 						task.wait(MAIL_BATCH_DELAY)
 
 						needsCooldownBeforeNextMail = true
@@ -5382,7 +5535,7 @@ local function sendPlans(plans, reason)
 				local complete = mode == "Fruit" and sentCount >= targetCount or sentTotal >= targetValue
 				if complete then
 					if mode == "Fruit" then
-						addLog(string.format("%s fruit target reached: %s x%d | Base %s.", username, targetFruit, sentCount, formatShortNumber(sentTotal)), Color3.fromRGB(170, 255, 170))
+						addLog(string.format("%s fruit-count target reached: %d fruits | Base %s.", username, sentCount, formatShortNumber(sentTotal)), Color3.fromRGB(170, 255, 170))
 					else
 						addLog(username .. " value target reached: " .. formatShortNumber(sentTotal) .. " sent.", Color3.fromRGB(170, 255, 170))
 					end
@@ -5392,7 +5545,7 @@ local function sendPlans(plans, reason)
 
 				if #sentFruits > 0 then
 					local historyTarget = mode == "Fruit" and sentTotal or targetValue
-					local historyReason = mode == "Fruit" and (targetFruit .. " x" .. targetCount .. " | " .. stoppedReason) or stoppedReason
+					local historyReason = mode == "Fruit" and (tostring(targetCount) .. " fruits | " .. stoppedReason) or stoppedReason
 					addHistory(username, sentFruits, sentTotal, historyTarget, sentMails, historyReason)
 				end
 				refreshUI()
@@ -5503,8 +5656,10 @@ local function buildMailerCloudSettings()
 		recipients = recipientBox.Text,
 		valueTarget = targetBox.Text,
 		packetSequence = seqBox.Text,
-		fruitName = fruitNameBox.Text,
 		fruitCount = math.max(1, math.floor(tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT)),
+		mailLimitCount = mailLimitCount,
+		mailLimitWindowHours = mailLimitWindowHours,
+		mailUsageTimestamps = mailUsageTimestamps,
 	}
 end
 
@@ -5519,6 +5674,37 @@ _G.TEBHubCloudSections.Mailer = {
 	Get = buildMailerCloudSettings,
 }
 
+local function updateMailLimitDisplay()
+	local used, remaining, resetIn = getMailLimitState()
+	mailLimitCountBox.Text = tostring(mailLimitCount)
+	mailWindowBox.Text = tostring(mailLimitWindowHours)
+
+	if remaining <= 0 then
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | reset in %s",
+			used,
+			mailLimitCount,
+			formatDuration(resetIn)
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(255, 120, 120)
+	else
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | %d left",
+			used,
+			mailLimitCount,
+			remaining
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
+	end
+end
+
+local function recordMailUsage()
+	table.insert(mailUsageTimestamps, os.time())
+	pruneMailUsage()
+	updateMailLimitDisplay()
+	queueMailerCloudSave()
+end
+
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
 
@@ -5531,14 +5717,12 @@ local function updateTargetModeUI()
 	-- Keep both target sections visible. The checkbox decides which one is used.
 	targetBox.Visible = true
 	targetFormattedLabel.Visible = true
-	fruitTargetLabel.Visible = true
-	fruitNameBox.Visible = true
 	fruitCountBox.Visible = true
 
 	targetBox.TextTransparency = fruitMode and 0.45 or 0
 	targetFormattedLabel.TextTransparency = fruitMode and 0.45 or 0
-	fruitNameBox.TextTransparency = fruitMode and 0 or 0.45
 	fruitCountBox.TextTransparency = fruitMode and 0 or 0.45
+	fruitCountHint.TextTransparency = fruitMode and 0 or 0.45
 end
 
 valueModeButton.MouseButton1Click:Connect(function()
@@ -5561,16 +5745,25 @@ fruitCountBox.FocusLost:Connect(function()
 	queueMailerCloudSave()
 end)
 
-fruitNameBox.FocusLost:Connect(function()
-	if tostring(fruitNameBox.Text or ""):match("^%s*$") then
-		fruitNameBox.Text = DEFAULT_TARGET_FRUIT
-	end
+mailLimitCountBox.FocusLost:Connect(function()
+	local value = math.floor(tonumber(mailLimitCountBox.Text) or 0)
+	mailLimitCount = math.clamp(value > 0 and value or DEFAULT_MAIL_LIMIT_COUNT, 1, 500)
+	updateMailLimitDisplay()
+	queueMailerCloudSave()
+end)
+
+mailWindowBox.FocusLost:Connect(function()
+	local value = tonumber(mailWindowBox.Text)
+	mailLimitWindowHours = math.clamp(value and value > 0 and value or DEFAULT_MAIL_LIMIT_WINDOW_HOURS, 1, 168)
+	pruneMailUsage()
+	updateMailLimitDisplay()
+	queueMailerCloudSave()
 end)
 
 updateTargetModeUI()
+updateMailLimitDisplay()
 
 recipientBox.FocusLost:Connect(queueMailerCloudSave)
-fruitNameBox.FocusLost:Connect(queueMailerCloudSave)
 seqBox.FocusLost:Connect(queueMailerCloudSave)
 
 targetBox:GetPropertyChangedSignal("Text"):Connect(updateTargetFormattedLabel)
@@ -5681,7 +5874,7 @@ task.defer(function()
 	updateTargetFormattedLabel()
 	refreshUI()
 
-	addLog("Loaded phone compact mailer. Hypno Bloom supported, base price " .. tostring(HYPNO_BLOOM_BASE_PRICE) .. ".", Color3.fromRGB(170, 255, 170))
+	addLog("Loaded mailer with rolling " .. tostring(mailLimitCount) .. "-mail / " .. tostring(mailLimitWindowHours) .. "h tracker.", Color3.fromRGB(170, 255, 170))
 end)
 
 -- TEB Hub lifecycle bridge
