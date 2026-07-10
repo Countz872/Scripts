@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.1"
+local TEB_HUB_VERSION = "1.4.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2429,6 +2429,7 @@ local mailerRuntime = {
 	ServerDailyLimitReached = false,
 	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
 	WatchedLimitText = setmetatable({}, { __mode = "k" }),
+	TargetModeLocked = false,
 }
 
 -- Your game has a real mail cooldown.
@@ -3264,6 +3265,19 @@ for _, object in ipairs({ valueModeButton, fruitModeButton, fruitCountBox }) do
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, 7)
 	c.Parent = object
+end
+
+function mailerRuntime.GetVisibleTargetMode()
+	if valueModeButton:GetAttribute("Checked") == true then
+		return "Value"
+	end
+
+	if fruitModeButton:GetAttribute("Checked") == true then
+		return "Fruit"
+	end
+
+	-- Startup fallback before updateTargetModeUI has applied attributes.
+	return targetMode == "Fruit" and "Fruit" or "Value"
 end
 
 local mailLimitLabel = Instance.new("TextLabel")
@@ -4208,7 +4222,12 @@ local function userIdToMailBytes(userId)
 end
 
 loadRecipientsFromBox = function()
+	-- Use the mode the player can currently see, not a stale cloud/startup value.
+	targetMode = mailerRuntime.GetVisibleTargetMode()
+	mailerRuntime.TargetModeLocked = true
+
 	debugTrace("Load Players clicked")
+	debugTrace("Target mode locked for this load: " .. tostring(targetMode))
 	debugTrace("Raw input: " .. tostring(recipientBox.Text))
 
 	local parseOk, recipientsOrError = xpcall(function()
@@ -4237,6 +4256,7 @@ loadRecipientsFromBox = function()
 
 		local cardBuildOk, cardBuildError = xpcall(function()
 		local mapKey = username:lower()
+		local cardTargetMode = targetMode
 
 		local existingData = loadedRecipientMap[mapKey]
 		local existingCard = avatarCardMap[mapKey]
@@ -4329,10 +4349,10 @@ loadRecipientsFromBox = function()
 			initialFruitCount = DEFAULT_TARGET_FRUIT_COUNT
 		end
 
-		amountBox.Text = targetMode == "Fruit"
+		amountBox.Text = cardTargetMode == "Fruit"
 			and tostring(initialFruitCount)
 			or (targetBox.Text ~= "" and targetBox.Text or DEFAULT_TARGET_VALUE)
-		amountBox.PlaceholderText = targetMode == "Fruit" and "20" or "1B"
+		amountBox.PlaceholderText = cardTargetMode == "Fruit" and "20" or "1B"
 		amountBox.Font = Enum.Font.GothamBold
 		amountBox.TextSize = 9
 		amountBox.TextColor3 = Color3.fromRGB(255, 220, 120)
@@ -4363,13 +4383,14 @@ loadRecipientsFromBox = function()
 			LoadSerial = thisLookupSerial,
 			LoadGeneration = thisGeneration,
 			LoadState = "Loading",
+			TargetMode = cardTargetMode,
 		}
 
 		loadedRecipientMap[mapKey] = recipientData
 		table.insert(loadedRecipients, recipientData)
 
 		local function updateCardAmount()
-			if targetMode == "Fruit" then
+			if recipientData.TargetMode == "Fruit" then
 				local count = math.floor(tonumber(cleanNumberText(amountBox.Text)) or 0)
 
 				if count > 0 then
@@ -4395,7 +4416,7 @@ loadRecipientsFromBox = function()
 		amountBox:GetPropertyChangedSignal("Text"):Connect(updateCardAmount)
 
 		amountBox.FocusLost:Connect(function()
-			if targetMode == "Fruit" then
+			if recipientData.TargetMode == "Fruit" then
 				local count = math.floor(tonumber(cleanNumberText(amountBox.Text)) or 0)
 				local fallbackCount = math.floor(
 					tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT
@@ -6371,7 +6392,9 @@ _G.TEBHubCloudSections.Mailer = {
 			return false
 		end
 
-		if data.targetMode == "Value" or data.targetMode == "Fruit" then
+		if (data.targetMode == "Value" or data.targetMode == "Fruit")
+			and not mailerRuntime.TargetModeLocked
+		then
 			targetMode = data.targetMode
 		end
 
@@ -6532,6 +6555,9 @@ playerGui.DescendantAdded:Connect(mailerRuntime.WatchLimitObject)
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
 
+	valueModeButton:SetAttribute("Checked", not fruitMode)
+	fruitModeButton:SetAttribute("Checked", fruitMode)
+
 	valueModeButton.Text = fruitMode and "☐ Value" or "☑ Value"
 	fruitModeButton.Text = fruitMode and "☑ Fruits" or "☐ Fruits"
 
@@ -6550,6 +6576,7 @@ local function updateTargetModeUI()
 end
 
 valueModeButton.MouseButton1Click:Connect(function()
+	mailerRuntime.TargetModeLocked = true
 	targetMode = "Value"
 	updateTargetModeUI()
 	queueMailerCloudSave()
@@ -6557,6 +6584,7 @@ valueModeButton.MouseButton1Click:Connect(function()
 end)
 
 fruitModeButton.MouseButton1Click:Connect(function()
+	mailerRuntime.TargetModeLocked = true
 	targetMode = "Fruit"
 	updateTargetModeUI()
 	queueMailerCloudSave()
