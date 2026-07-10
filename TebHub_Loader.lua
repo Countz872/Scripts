@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.5"
+local TEB_HUB_VERSION = "1.3.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -8031,7 +8031,7 @@ local function createModuleShell(pageName, moduleName, warningText)
 	host.Position = UDim2.fromOffset(0, 64)
 	host.BackgroundColor3 = Color3.fromRGB(22, 23, 31)
 	host.BorderSizePixel = 0
-	host.ClipsDescendants = true
+	host.ClipsDescendants = false
 	host.Parent = page
 	addCorner(host, 10)
 
@@ -8175,10 +8175,13 @@ local function normalizeMountedFrame(moduleName, frame)
 	frame.Position = UDim2.fromOffset(0, 0)
 	frame.Size = UDim2.fromScale(1, 1)
 	frame.Visible = true
+	frame.ClipsDescendants = false
 
 	for _, obj in ipairs(frame:GetDescendants()) do
 		if obj:IsA("UIScale") then
 			obj.Scale = 1
+		elseif obj:IsA("UISizeConstraint") or obj:IsA("UIAspectRatioConstraint") then
+			obj:Destroy()
 		end
 	end
 
@@ -8190,32 +8193,48 @@ local function normalizeMountedFrame(moduleName, frame)
 	if moduleName == "Bloom" then
 		local bloomBody = frame:FindFirstChildWhichIsA("ScrollingFrame")
 		if bloomBody then
+			bloomBody.AnchorPoint = Vector2.new(0, 0)
 			bloomBody.Position = UDim2.fromOffset(0, 0)
 			bloomBody.Size = UDim2.fromScale(1, 1)
 			bloomBody.ScrollBarThickness = 5
-		end
-		for _, child in ipairs(frame:GetChildren()) do
-			if child:IsA("Frame") and child ~= bloomBody and child.AbsoluteSize.Y <= 45 then
-				child.Visible = false
-			end
+			bloomBody.ClipsDescendants = true
 		end
 	elseif moduleName == "Mailer" then
 		local content = frame:FindFirstChild("Content")
-		if content and content:IsA("GuiObject") then
-			content.Position = UDim2.fromOffset(6, 6)
-			content.Size = UDim2.new(1, -12, 1, -12)
+		if content and content:IsA("ScrollingFrame") then
+			content.AnchorPoint = Vector2.new(0, 0)
+			content.Position = UDim2.fromOffset(0, 0)
+			content.Size = UDim2.fromScale(1, 1)
+			content.ScrollBarThickness = 6
+			content.ClipsDescendants = true
+			content.AutomaticCanvasSize = Enum.AutomaticSize.None
+
+			if content.CanvasSize.Y.Offset < 1050 then
+				content.CanvasSize = UDim2.fromOffset(0, 1050)
+			end
+		elseif content and content:IsA("GuiObject") then
+			content.AnchorPoint = Vector2.new(0, 0)
+			content.Position = UDim2.fromOffset(0, 0)
+			content.Size = UDim2.fromScale(1, 1)
 		end
 	elseif moduleName == "Optimizer" then
 		local content = frame:FindFirstChild("Content")
 		if content and content:IsA("GuiObject") then
-			content.Position = UDim2.fromOffset(20, 20)
-			content.Size = UDim2.new(1, -40, 1, -40)
+			content.AnchorPoint = Vector2.new(0, 0)
+			content.Position = UDim2.fromOffset(8, 8)
+			content.Size = UDim2.new(1, -16, 1, -16)
 		end
 	end
 end
 
 local function mountModuleUI(moduleName)
 	local guiName = moduleGuiNames[moduleName]
+	local host = moduleHosts[moduleName]
+
+	if not host then
+		return false, "No unified host exists for " .. tostring(moduleName)
+	end
+
 	if not guiName then
 		return false, "No GUI name is registered for " .. tostring(moduleName)
 	end
@@ -8251,6 +8270,7 @@ local function mountModuleUI(moduleName)
 
 	-- The frame is now under the unified host and must remain visible.
 	host.Visible = true
+	host.ClipsDescendants = false
 	frame.Visible = true
 	frame.Active = true
 	frame.ZIndex = 2
@@ -8258,9 +8278,7 @@ local function mountModuleUI(moduleName)
 
 	task.defer(function()
 		if frame.Parent == host then
-			frame.Visible = true
-			frame.Position = UDim2.fromOffset(0, 0)
-			frame.Size = UDim2.fromScale(1, 1)
+			normalizeMountedFrame(moduleName, frame)
 		end
 	end)
 
