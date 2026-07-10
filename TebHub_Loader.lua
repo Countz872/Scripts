@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.2"
+local TEB_HUB_VERSION = "1.2.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -4043,6 +4043,12 @@ loadRecipientsFromBox = function()
 		local existingData = loadedRecipientMap[mapKey]
 		local existingCard = avatarCardMap[mapKey]
 
+		-- Never replace a card while its username lookup is still running.
+		if existingData and existingData.LoadState == "Loading" then
+			addLog(username .. " is already loading.")
+			continue
+		end
+
 		if existingData and existingData.UserId then
 			addLog(username .. " is already loaded. Edit the target on the avatar card.")
 			continue
@@ -4205,8 +4211,7 @@ loadRecipientsFromBox = function()
 				return not finished
 					and card.Parent ~= nil
 					and recipientData.LoadSerial == thisLookupSerial
-					and recipientData.LoadGeneration == recipientLoadGeneration
-					and thisGeneration == recipientLoadGeneration
+					and recipientData.LoadGeneration == thisGeneration
 					and loadedRecipientMap[mapKey] == recipientData
 					and avatarCardMap[mapKey] == card
 			end
@@ -4219,6 +4224,16 @@ loadRecipientsFromBox = function()
 
 				finished = true
 				recipientData.LoadState = "TimedOut"
+				loadedRecipientMap[mapKey] = nil
+				avatarCardMap[mapKey] = nil
+
+				for i = #loadedRecipients, 1, -1 do
+					if loadedRecipients[i] == recipientData then
+						table.remove(loadedRecipients, i)
+						break
+					end
+				end
+
 				nameLabel.Text = username .. "\nlookup timed out"
 				nameLabel.TextColor3 = Color3.fromRGB(255, 190, 100)
 				addLog(
@@ -4289,7 +4304,7 @@ loadRecipientsFromBox = function()
 					and type(thumbnailOrError) == "string"
 					and card.Parent
 					and recipientData.LoadSerial == thisLookupSerial
-					and recipientData.LoadGeneration == recipientLoadGeneration
+					and recipientData.LoadGeneration == thisGeneration
 					and loadedRecipientMap[mapKey] == recipientData
 				then
 					img.Image = thumbnailOrError
@@ -5920,11 +5935,22 @@ clearQueryButton.MouseButton1Click:Connect(function()
 	addLog("Cleared username query and loaded user cards.", Color3.fromRGB(255, 220, 120))
 end)
 
-recipientBox.FocusLost:Connect(function()
-	loadRecipientsFromBox()
-end)
+-- Load only from the button. Clicking this button naturally makes the
+-- TextBox lose focus, so also loading from FocusLost causes duplicate lookups.
+local loadButtonBusy = false
 
-loadUsersButton.MouseButton1Click:Connect(loadRecipientsFromBox)
+loadUsersButton.MouseButton1Click:Connect(function()
+	if loadButtonBusy then
+		return
+	end
+
+	loadButtonBusy = true
+	loadRecipientsFromBox()
+
+	task.delay(0.75, function()
+		loadButtonBusy = false
+	end)
+end)
 
 previewButton.MouseButton1Click:Connect(function()
 	makePreview()
