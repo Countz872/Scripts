@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.0"
+local TEB_HUB_VERSION = "1.3.1"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -1360,6 +1360,7 @@ local WARN_COLOR = "rgb(255,220,120)"
 local gui = Instance.new("ScreenGui")
 gui.Name = "BloomAutomationUI"
 gui.ResetOnSpawn = false
+gui.Enabled = not (_G.TEB_EMBEDDED_MODE == true)
 gui.IgnoreGuiInset = true
 gui.Parent = player:WaitForChild("PlayerGui")
 
@@ -2866,6 +2867,7 @@ end
 local gui = Instance.new("ScreenGui")
 gui.Name = "CompactFruitMultiMailer"
 gui.ResetOnSpawn = false
+gui.Enabled = not (_G.TEB_EMBEDDED_MODE == true)
 gui.IgnoreGuiInset = true
 gui.Parent = playerGui
 
@@ -7201,9 +7203,14 @@ local function executeModule(name)
 		return false, "loadstring is not available."
 	end
 
-	moduleBusy[name] = true
-
 	local source = MODULE_SOURCES[name]
+	if type(source) ~= "string" or source == "" then
+		return false, "Module source is missing."
+	end
+
+	moduleBusy[name] = true
+	_G.TEB_EMBEDDED_MODE = true
+
 	local compiled, compileError = loadstring(source, "TEB_" .. name)
 
 	if not compiled then
@@ -7211,17 +7218,45 @@ local function executeModule(name)
 		return false, "Compile error: " .. tostring(compileError)
 	end
 
+	local completed = false
+	local runtimeOk = false
+	local runtimeError
+
 	task.spawn(function()
-		local ok, runtimeError = pcall(compiled)
+		runtimeOk, runtimeError = xpcall(compiled, debug.traceback)
+		completed = true
 		moduleBusy[name] = nil
 
-		if not ok then
+		if not runtimeOk then
 			warn("[TEB Hub][" .. name .. "]", runtimeError)
-			moduleEnabled[name] = false
 		end
 	end)
 
-	return true
+	local startedAt = os.clock()
+	local timeoutSeconds = 15
+
+	while os.clock() - startedAt < timeoutSeconds do
+		if completed and not runtimeOk then
+			return false, "Runtime error: " .. tostring(runtimeError)
+		end
+
+		local module = _G.TEBHubModules and _G.TEBHubModules[name]
+		local guiName = moduleGuiNames and moduleGuiNames[name]
+		local moduleGui = guiName and playerGui:FindFirstChild(guiName)
+
+		if module and moduleGui then
+			moduleGui.Enabled = false
+			return true
+		end
+
+		task.wait(0.05)
+	end
+
+	if completed and not runtimeOk then
+		return false, "Runtime error: " .. tostring(runtimeError)
+	end
+
+	return false, name .. " did not finish starting within " .. tostring(timeoutSeconds) .. " seconds."
 end
 
 local function stopModule(name)
@@ -7967,42 +8002,44 @@ end
 local function mountModuleUI(moduleName)
 	local guiName = moduleGuiNames[moduleName]
 	if not guiName then
-		return
+		return false, "No GUI name is registered for " .. tostring(moduleName)
 	end
 
-	task.spawn(function()
-		local moduleGui = playerGui:WaitForChild(guiName, 8)
-		if not moduleGui then
-			setStatus(moduleName .. " started, but its UI was not found.", true)
-			return
+	local moduleGui = playerGui:FindFirstChild(guiName)
+	if not moduleGui then
+		return false, moduleName .. " UI was not created."
+	end
+
+	moduleGui.Enabled = false
+
+	local frame
+	if moduleName == "Mailer" then
+		frame = moduleGui:FindFirstChild("Main")
+	elseif moduleName == "Optimizer" then
+		frame = moduleGui:FindFirstChild("MainFrame")
+	else
+		frame = moduleGui:FindFirstChildWhichIsA("Frame")
+	end
+
+	if not frame then
+		return false, moduleName .. " main UI frame was not found."
+	end
+
+	-- Hide every other standalone GuiObject before moving the main frame.
+	for _, child in ipairs(moduleGui:GetChildren()) do
+		if child:IsA("GuiObject") and child ~= frame then
+			child.Visible = false
 		end
+	end
 
-		local frame
-		if moduleName == "Mailer" then
-			frame = moduleGui:FindFirstChild("Main")
-		elseif moduleName == "Optimizer" then
-			frame = moduleGui:FindFirstChild("MainFrame")
-		else
-			frame = moduleGui:FindFirstChildWhichIsA("Frame")
-		end
+	normalizeMountedFrame(moduleName, frame)
 
-		if not frame then
-			setStatus(moduleName .. " UI frame was not found.", true)
-			return
-		end
+	-- The frame is now under the unified host and must remain visible.
+	frame.Visible = true
+	moduleGui.Enabled = false
 
-		moduleGui.Enabled = false
-		normalizeMountedFrame(moduleName, frame)
-
-		for _, child in ipairs(moduleGui:GetChildren()) do
-			if child:IsA("GuiObject") then
-				child.Visible = false
-			end
-		end
-
-		moduleGui.Enabled = false
-		setStatus(moduleName .. " controls mounted inside TEB Hub.")
-	end)
+	setStatus(moduleName .. " controls mounted inside TEB Hub.")
+	return true
 end
 
 local function refreshModuleVisuals()
@@ -8025,21 +8062,31 @@ end
 
 local function setModule(name, wanted)
 	if wanted then
+		local oldGuiName = moduleGuiNames[name]
+		local oldStandaloneGui = oldGuiName and playerGui:FindFirstChild(oldGuiName)
+
+		if oldStandaloneGui then
+			oldStandaloneGui:Destroy()
+		end
+
 		local ok, err = executeModule(name)
+
 		if not ok then
 			moduleEnabled[name] = false
+			clearHost(name)
 			setStatus(name .. " failed: " .. tostring(err), true)
 		else
-			moduleEnabled[name] = true
-			setStatus(name .. " started.")
+			local mounted, mountError = mountModuleUI(name)
 
-			local guiName = moduleGuiNames[name]
-			local standaloneGui = guiName and playerGui:FindFirstChild(guiName)
-			if standaloneGui and standaloneGui:IsA("ScreenGui") then
-				standaloneGui.Enabled = false
+			if not mounted then
+				stopModule(name)
+				clearHost(name)
+				moduleEnabled[name] = false
+				setStatus(name .. " mount failed: " .. tostring(mountError), true)
+			else
+				moduleEnabled[name] = true
+				setStatus(name .. " enabled inside TEB Hub.")
 			end
-
-			mountModuleUI(name)
 		end
 	else
 		stopModule(name)
