@@ -7002,7 +7002,12 @@ local function mountModuleUI(moduleName)
 		end
 
 		normalizeMountedFrame(moduleName, frame)
-		moduleGui:Destroy()
+
+		-- Keep the original ScreenGui alive even after its visible frame is moved.
+		-- Bloom's automation loop uses `while gui.Parent do`, so destroying this
+		-- ScreenGui would silently stop the automation immediately.
+		moduleGui.Enabled = false
+
 		setStatus(moduleName .. " controls mounted inside TEB Hub.")
 	end)
 end
