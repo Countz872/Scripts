@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.3"
+local TEB_HUB_VERSION = "1.3.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -5542,6 +5542,7 @@ local function makePreview()
 		local reason = "no current fruits"
 		local plan = {
 			Username = username,
+			UserId = tonumber(recipient.UserId),
 			Fruits = {},
 			Total = 0,
 			Batches = {},
@@ -5809,6 +5810,50 @@ local function selectLiveFruitBatch(remainingCount)
 		#selected >= remainingCount and "fruit target ready" or "partial fruit batch"
 end
 
+local function resolvePlanUserId(plan, timeoutSeconds)
+	local existing = tonumber(plan and plan.UserId)
+	if existing then
+		return existing
+	end
+
+	local username = tostring(plan and plan.Username or "")
+	local finished = false
+	local resolved
+	local resolveError
+
+	task.spawn(function()
+		local ok, result = xpcall(function()
+			return getUserIdFromUsername(username)
+		end, debug.traceback)
+
+		if ok then
+			resolved = tonumber(result)
+		else
+			resolveError = result
+		end
+
+		finished = true
+	end)
+
+	local startedAt = os.clock()
+	timeoutSeconds = tonumber(timeoutSeconds) or 10
+
+	while not finished and os.clock() - startedAt < timeoutSeconds do
+		task.wait(0.05)
+	end
+
+	if not finished then
+		return nil, "username lookup timed out"
+	end
+
+	if not resolved then
+		return nil, resolveError or "username lookup failed"
+	end
+
+	plan.UserId = resolved
+	return resolved
+end
+
 --// MAILING
 
 local function sendPlans(plans, reason)
@@ -5853,10 +5898,14 @@ local function sendPlans(plans, reason)
 
 	mailing = true
 	sendButton.Text = "Sending..."
+	addLog(
+		"Starting mail queue with " .. tostring(#plans) .. " plan(s).",
+		Color3.fromRGB(170, 220, 255)
+	)
 	prepareProgressRows(plans)
 
 	task.spawn(function()
-		local ok, err = pcall(function()
+		local ok, err = xpcall(function()
 			local needsCooldownBeforeNextMail = false
 
 			for _, plan in ipairs(plans) do
@@ -5880,7 +5929,28 @@ local function sendPlans(plans, reason)
 					continue
 				end
 
-				local userId = getUserIdFromUsername(username)
+				addLog("Preparing recipient " .. username .. "...", Color3.fromRGB(170, 220, 255))
+
+				local userId, userIdError = resolvePlanUserId(plan, 10)
+				if not userId then
+					addLog(
+						"Skipped " .. username .. ": " .. tostring(userIdError),
+						Color3.fromRGB(255, 120, 120)
+					)
+					if debugTrace then
+						debugTrace(
+							"RECIPIENT RESOLVE FAILED | user=" .. tostring(username)
+								.. " | error=" .. tostring(userIdError)
+						)
+					end
+					continue
+				end
+
+				addLog(
+					"Recipient ready: " .. username .. " (" .. tostring(userId) .. ")",
+					Color3.fromRGB(170, 255, 170)
+				)
+
 				local sentFruits, sentTotal, sentMails, sentCount = {}, 0, 0, 0
 				local stoppedReason = "completed"
 
@@ -5893,6 +5963,11 @@ local function sendPlans(plans, reason)
 				end
 
 				while mailing and ((mode == "Fruit" and sentCount < targetCount) or (mode == "Value" and sentTotal < targetValue)) do
+					addLog(
+						"Selecting fruits for " .. username .. "...",
+						Color3.fromRGB(170, 220, 255)
+					)
+
 					local selected, selectedTotal
 					if mode == "Fruit" then
 						selected, selectedTotal = selectLiveFruitBatch(targetCount - sentCount)
@@ -6054,9 +6129,17 @@ local function sendPlans(plans, reason)
 				end
 				refreshUI()
 			end
-		end)
+		end, debug.traceback)
 
-		addLog(ok and "Mailing finished." or ("Send error: " .. tostring(err)), ok and Color3.fromRGB(170, 255, 170) or Color3.fromRGB(255, 120, 120))
+		if ok then
+			addLog("Mailing finished.", Color3.fromRGB(170, 255, 170))
+		else
+			addLog("Send error: " .. tostring(err), Color3.fromRGB(255, 120, 120))
+			if debugTrace then
+				debugTrace("MAILING ERROR: " .. tostring(err))
+			end
+		end
+
 		mailing = false
 		sendButton.Text = "Mail"
 	end)
