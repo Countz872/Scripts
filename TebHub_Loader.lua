@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.1"
+local TEB_HUB_VERSION = "1.3.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2423,8 +2423,13 @@ local DEFAULT_PACKET_SEQUENCE_START_HEX = "3E"
 
 local RECIPIENT_PACKET_DELAY = 0.12
 local MAIL_BATCH_DELAY = 0.20
-local MAIL_SEND_VERIFY_TIMEOUT = 8
-local MAIL_SEND_VERIFY_INTERVAL = 0.25
+local mailerRuntime = {
+	VerifyTimeout = 8,
+	VerifyInterval = 0.25,
+	ServerDailyLimitReached = false,
+	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
+	WatchedLimitText = setmetatable({}, { __mode = "k" }),
+}
 
 -- Your game has a real mail cooldown.
 -- This script waits this long between each mail packet.
@@ -2597,8 +2602,6 @@ local KG_ATTRIBUTES = {
 
 local running = true
 local mailing = false
-local serverDailyLimitReached = false
-local dailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!"
 
 local fruitCache = {}
 local connectedRoots = {}
@@ -5315,7 +5318,7 @@ local function markFruitsAsSent(fruits)
 end
 
 
-local function isFruitStillInInventory(fruit)
+function mailerRuntime.IsFruitStillInInventory(fruit)
 	if not fruit then
 		return false
 	end
@@ -5339,9 +5342,9 @@ local function isFruitStillInInventory(fruit)
 	return false
 end
 
-local function verifyBatchLeftInventory(batch, timeoutSeconds)
+function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds)
 	local startedAt = os.clock()
-	timeoutSeconds = tonumber(timeoutSeconds) or MAIL_SEND_VERIFY_TIMEOUT
+	timeoutSeconds = tonumber(timeoutSeconds) or mailerRuntime.VerifyTimeout
 
 	while running and mailing and (os.clock() - startedAt) < timeoutSeconds do
 		rescanInventoryNow()
@@ -5350,7 +5353,7 @@ local function verifyBatchLeftInventory(batch, timeoutSeconds)
 		local remaining = {}
 
 		for _, fruit in ipairs(batch) do
-			if isFruitStillInInventory(fruit) then
+			if mailerRuntime.IsFruitStillInInventory(fruit) then
 				table.insert(remaining, fruit)
 			else
 				table.insert(removed, fruit)
@@ -5361,7 +5364,7 @@ local function verifyBatchLeftInventory(batch, timeoutSeconds)
 			return true, removed, remaining
 		end
 
-		task.wait(MAIL_SEND_VERIFY_INTERVAL)
+		task.wait(mailerRuntime.VerifyInterval)
 	end
 
 	rescanInventoryNow()
@@ -5370,7 +5373,7 @@ local function verifyBatchLeftInventory(batch, timeoutSeconds)
 	local remaining = {}
 
 	for _, fruit in ipairs(batch) do
-		if isFruitStillInInventory(fruit) then
+		if mailerRuntime.IsFruitStillInInventory(fruit) then
 			table.insert(remaining, fruit)
 		else
 			table.insert(removed, fruit)
@@ -5820,8 +5823,8 @@ local function sendPlans(plans, reason)
 
 	local usedMails, remainingMails, resetIn = getMailLimitState()
 
-	if serverDailyLimitReached then
-		addLog(dailyLimitWarningText, Color3.fromRGB(255, 90, 90))
+	if mailerRuntime.ServerDailyLimitReached then
+		addLog(mailerRuntime.DailyLimitWarningText, Color3.fromRGB(255, 90, 90))
 		updateMailLimitDisplay()
 		return
 	end
@@ -5951,10 +5954,10 @@ local function sendPlans(plans, reason)
 						)
 
 						local fullyRemoved, removedFruits, remainingFruits =
-							verifyBatchLeftInventory(batch, MAIL_SEND_VERIFY_TIMEOUT)
+							mailerRuntime.VerifyBatchLeftInventory(batch, mailerRuntime.VerifyTimeout)
 
 						if #removedFruits == 0 then
-							stoppedReason = serverDailyLimitReached
+							stoppedReason = mailerRuntime.ServerDailyLimitReached
 								and "server daily gift limit reached"
 								or "mail rejected: fruits stayed in inventory"
 
@@ -6211,7 +6214,7 @@ recordMailUsage = function()
 end
 
 
-local function isDailyGiftLimitWarning(value)
+function mailerRuntime.IsDailyGiftLimitWarning(value)
 	local normalized = tostring(value or "")
 		:lower()
 		:gsub("’", "'")
@@ -6222,12 +6225,12 @@ local function isDailyGiftLimitWarning(value)
 		and normalized:find("try again tomorrow", 1, true) ~= nil
 end
 
-local function markDailyGiftLimitReached(sourceText)
-	if serverDailyLimitReached then
+function mailerRuntime.MarkDailyGiftLimitReached(sourceText)
+	if mailerRuntime.ServerDailyLimitReached then
 		return
 	end
 
-	serverDailyLimitReached = true
+	mailerRuntime.ServerDailyLimitReached = true
 	mailing = false
 
 	local now = os.time()
@@ -6239,17 +6242,15 @@ local function markDailyGiftLimitReached(sourceText)
 
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
-	addLog(dailyLimitWarningText, Color3.fromRGB(255, 90, 90))
+	addLog(mailerRuntime.DailyLimitWarningText, Color3.fromRGB(255, 90, 90))
 
 	if debugTrace then
 		debugTrace("DAILY LIMIT DETECTED: " .. tostring(sourceText))
 	end
 end
 
-local watchedLimitText = setmetatable({}, { __mode = "k" })
-
-local function watchLimitObject(object)
-	if watchedLimitText[object] then
+function mailerRuntime.WatchLimitObject(object)
+	if mailerRuntime.WatchedLimitText[object] then
 		return
 	end
 
@@ -6261,15 +6262,15 @@ local function watchLimitObject(object)
 		return
 	end
 
-	watchedLimitText[object] = true
+	mailerRuntime.WatchedLimitText[object] = true
 
 	local function inspect()
 		local ok, value = pcall(function()
 			return object.Text
 		end)
 
-		if ok and isDailyGiftLimitWarning(value) then
-			markDailyGiftLimitReached(value)
+		if ok and mailerRuntime.IsDailyGiftLimitWarning(value) then
+			mailerRuntime.MarkDailyGiftLimitReached(value)
 		end
 	end
 
@@ -6278,10 +6279,10 @@ local function watchLimitObject(object)
 end
 
 for _, object in ipairs(playerGui:GetDescendants()) do
-	watchLimitObject(object)
+	mailerRuntime.WatchLimitObject(object)
 end
 
-playerGui.DescendantAdded:Connect(watchLimitObject)
+playerGui.DescendantAdded:Connect(mailerRuntime.WatchLimitObject)
 
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
@@ -7707,7 +7708,7 @@ local function makeActionButton(parent, text, position, size)
 end
 
 local statusBar = Instance.new("TextLabel")
-statusBar.Size = UDim2.new(1, -20, 0, 34)
+statusBar.Size = UDim2.new(1, -82, 0, 34)
 statusBar.Position = UDim2.new(0, 10, 1, -44)
 statusBar.BackgroundColor3 = Color3.fromRGB(28, 30, 41)
 statusBar.BorderSizePixel = 0
@@ -7716,13 +7717,52 @@ statusBar.Font = Enum.Font.Code
 statusBar.TextSize = 10
 statusBar.TextColor3 = Color3.fromRGB(170, 215, 255)
 statusBar.TextWrapped = true
+statusBar.TextXAlignment = Enum.TextXAlignment.Left
 statusBar.Parent = sidebar
 addCorner(statusBar, 8)
 
+local copyStatusButton = Instance.new("TextButton")
+copyStatusButton.Name = "CopyStatusButton"
+copyStatusButton.Size = UDim2.fromOffset(56, 34)
+copyStatusButton.Position = UDim2.new(1, -66, 1, -44)
+copyStatusButton.BackgroundColor3 = Color3.fromRGB(58, 59, 76)
+copyStatusButton.BorderSizePixel = 0
+copyStatusButton.Text = "Copy"
+copyStatusButton.Font = Enum.Font.GothamBold
+copyStatusButton.TextSize = 10
+copyStatusButton.TextColor3 = Color3.new(1, 1, 1)
+copyStatusButton.Parent = sidebar
+addCorner(copyStatusButton, 8)
+
+local lastFullStatus = "TEB Hub ready."
+
 local function setStatus(text, isError)
-	statusBar.Text = tostring(text)
+	lastFullStatus = tostring(text)
+	statusBar.Text = lastFullStatus
 	statusBar.TextColor3 = isError and Color3.fromRGB(255, 125, 125) or Color3.fromRGB(170, 215, 255)
+	copyStatusButton.BackgroundColor3 = isError and Color3.fromRGB(105, 48, 55) or Color3.fromRGB(58, 59, 76)
 end
+
+copyStatusButton.MouseButton1Click:Connect(function()
+	local copied = false
+
+	if type(setclipboard) == "function" then
+		copied = pcall(setclipboard, lastFullStatus)
+	elseif type(toclipboard) == "function" then
+		copied = pcall(toclipboard, lastFullStatus)
+	end
+
+	copyStatusButton.Text = copied and "Copied" or "Print"
+	if not copied then
+		print("[TEB Hub Full Status]", lastFullStatus)
+	end
+
+	task.delay(1.5, function()
+		if copyStatusButton.Parent then
+			copyStatusButton.Text = "Copy"
+		end
+	end)
+end)
 
 -- From this point onward, early core-module messages also update the visible UI.
 earlySetStatus = setStatus
