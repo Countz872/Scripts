@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.2"
+local TEB_HUB_VERSION = "1.4.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7164,7 +7164,7 @@ gui.Parent = playerGui
 
 local main = Instance.new("Frame")
 main.Name = "MainFrame"
-main.Size = UDim2.fromOffset(230, 115)
+main.Size = UDim2.fromOffset(280, 300)
 main.Position = UDim2.fromOffset(25, 180)
 main.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 main.BorderSizePixel = 0
@@ -7226,24 +7226,76 @@ content.BackgroundTransparency = 1
 content.Parent = main
 
 local plantsLabel = Instance.new("TextLabel")
-plantsLabel.Size = UDim2.new(1, 0, 0, 28)
+plantsLabel.Size = UDim2.new(1, 0, 0, 24)
 plantsLabel.Position = UDim2.fromOffset(0, 0)
 plantsLabel.BackgroundTransparency = 1
 plantsLabel.TextColor3 = Color3.fromRGB(180, 255, 180)
-plantsLabel.TextSize = 18
+plantsLabel.TextSize = 16
 plantsLabel.Font = Enum.Font.Code
 plantsLabel.TextXAlignment = Enum.TextXAlignment.Left
 plantsLabel.Parent = content
 
 local fruitsLabel = Instance.new("TextLabel")
-fruitsLabel.Size = UDim2.new(1, 0, 0, 28)
-fruitsLabel.Position = UDim2.fromOffset(0, 32)
+fruitsLabel.Size = UDim2.new(1, 0, 0, 24)
+fruitsLabel.Position = UDim2.fromOffset(0, 26)
 fruitsLabel.BackgroundTransparency = 1
 fruitsLabel.TextColor3 = Color3.fromRGB(255, 220, 160)
-fruitsLabel.TextSize = 18
+fruitsLabel.TextSize = 16
 fruitsLabel.Font = Enum.Font.Code
 fruitsLabel.TextXAlignment = Enum.TextXAlignment.Left
 fruitsLabel.Parent = content
+
+local mutatedLabel = Instance.new("TextLabel")
+mutatedLabel.Size = UDim2.new(1, 0, 0, 24)
+mutatedLabel.Position = UDim2.fromOffset(0, 52)
+mutatedLabel.BackgroundTransparency = 1
+mutatedLabel.TextColor3 = Color3.fromRGB(210, 180, 255)
+mutatedLabel.TextSize = 16
+mutatedLabel.Font = Enum.Font.Code
+mutatedLabel.TextXAlignment = Enum.TextXAlignment.Left
+mutatedLabel.Parent = content
+
+local mutationTitle = Instance.new("TextLabel")
+mutationTitle.Size = UDim2.new(1, 0, 0, 22)
+mutationTitle.Position = UDim2.fromOffset(0, 80)
+mutationTitle.BackgroundTransparency = 1
+mutationTitle.Text = "Mutation breakdown"
+mutationTitle.TextColor3 = Color3.fromRGB(235, 235, 245)
+mutationTitle.TextSize = 14
+mutationTitle.Font = Enum.Font.SourceSansBold
+mutationTitle.TextXAlignment = Enum.TextXAlignment.Left
+mutationTitle.Parent = content
+
+local mutationScroll = Instance.new("ScrollingFrame")
+mutationScroll.Name = "MutationScroll"
+mutationScroll.Size = UDim2.new(1, 0, 1, -106)
+mutationScroll.Position = UDim2.fromOffset(0, 104)
+mutationScroll.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+mutationScroll.BackgroundTransparency = 0.2
+mutationScroll.BorderSizePixel = 0
+mutationScroll.ScrollBarThickness = 5
+mutationScroll.CanvasSize = UDim2.fromOffset(0, 0)
+mutationScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+mutationScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+mutationScroll.Parent = content
+
+local mutationScrollCorner = Instance.new("UICorner")
+mutationScrollCorner.CornerRadius = UDim.new(0, 6)
+mutationScrollCorner.Parent = mutationScroll
+
+local mutationListLabel = Instance.new("TextLabel")
+mutationListLabel.Name = "MutationList"
+mutationListLabel.Size = UDim2.new(1, -12, 0, 24)
+mutationListLabel.Position = UDim2.fromOffset(6, 5)
+mutationListLabel.BackgroundTransparency = 1
+mutationListLabel.Text = "No mutated fruits found."
+mutationListLabel.TextColor3 = Color3.fromRGB(220, 220, 225)
+mutationListLabel.TextSize = 14
+mutationListLabel.Font = Enum.Font.Code
+mutationListLabel.TextXAlignment = Enum.TextXAlignment.Left
+mutationListLabel.TextYAlignment = Enum.TextYAlignment.Top
+mutationListLabel.TextWrapped = false
+mutationListLabel.Parent = mutationScroll
 
 --------------------------------------------------
 -- LIGHTWEIGHT COUNTER LOGIC
@@ -7251,24 +7303,117 @@ fruitsLabel.Parent = content
 
 local watchedFolders = {}
 local folderConnections = {}
+local fruitMutationConnections = {}
 local updateQueued = false
+
+local function getMutationName(fruit)
+	if not fruit then
+		return nil
+	end
+
+	local value = fruit:GetAttribute("mutation")
+
+	if value == nil then
+		value = fruit:GetAttribute("Mutation")
+	end
+
+	if value == nil then
+		value = fruit:GetAttribute("Mutations")
+	end
+
+	if value == nil then
+		return nil
+	end
+
+	local mutationName = tostring(value)
+		:gsub("^%s+", "")
+		:gsub("%s+$", "")
+
+	local lowered = mutationName:lower()
+
+	if mutationName == ""
+		or lowered == "none"
+		or lowered == "normal"
+		or lowered == "nil"
+		or lowered == "false"
+		or lowered == "0"
+	then
+		return nil
+	end
+
+	return mutationName
+end
 
 local function countNow()
 	local plantCount = 0
 	local fruitCount = 0
+	local mutatedCount = 0
+	local mutationCounts = {}
 
 	for folder in pairs(watchedFolders) do
 		if folder and folder.Parent then
 			if folder.Name == PLANTS_FOLDER_NAME then
 				plantCount += #folder:GetChildren()
 			elseif folder.Name == FRUITS_FOLDER_NAME then
-				fruitCount += #folder:GetChildren()
+				for _, fruit in ipairs(folder:GetChildren()) do
+					fruitCount += 1
+
+					local mutationName = getMutationName(fruit)
+
+					if mutationName then
+						mutatedCount += 1
+						mutationCounts[mutationName] =
+							(mutationCounts[mutationName] or 0) + 1
+					end
+				end
 			end
 		end
 	end
 
+	local mutationRows = {}
+
+	for mutationName, count in pairs(mutationCounts) do
+		table.insert(mutationRows, {
+			Name = mutationName,
+			Count = count,
+		})
+	end
+
+	table.sort(mutationRows, function(a, b)
+		if a.Count == b.Count then
+			return a.Name:lower() < b.Name:lower()
+		end
+
+		return a.Count > b.Count
+	end)
+
+	local lines = {}
+
+	for _, row in ipairs(mutationRows) do
+		table.insert(
+			lines,
+			string.format("%s: %d", row.Name, row.Count)
+		)
+	end
+
+	if #lines == 0 then
+		lines[1] = "No mutated fruits found."
+	end
+
+	local lineHeight = 19
+	local listHeight = math.max(24, (#lines * lineHeight) + 8)
+
 	plantsLabel.Text = "Plants: " .. tostring(plantCount)
 	fruitsLabel.Text = "Fruits: " .. tostring(fruitCount)
+	mutatedLabel.Text = string.format(
+		"Mutated: %d / %d",
+		mutatedCount,
+		fruitCount
+	)
+
+	mutationListLabel.Text = table.concat(lines, "\n")
+	mutationListLabel.Size = UDim2.new(1, -12, 0, listHeight)
+	mutationScroll.CanvasSize = UDim2.fromOffset(0, listHeight + 10)
 end
 
 local function queueCounterUpdate()
@@ -7284,6 +7429,46 @@ local function queueCounterUpdate()
 	end)
 end
 
+local function unwatchFruitMutation(fruit)
+	local connections = fruitMutationConnections[fruit]
+
+	if connections then
+		for _, connection in ipairs(connections) do
+			connection:Disconnect()
+		end
+
+		fruitMutationConnections[fruit] = nil
+	end
+end
+
+local function watchFruitMutation(fruit)
+	if fruitMutationConnections[fruit] then
+		return
+	end
+
+	local connections = {}
+
+	for _, attributeName in ipairs({"mutation", "Mutation", "Mutations"}) do
+		table.insert(
+			connections,
+			fruit:GetAttributeChangedSignal(attributeName):Connect(
+				queueCounterUpdate
+			)
+		)
+	end
+
+	table.insert(
+		connections,
+		fruit.AncestryChanged:Connect(function(_, parent)
+			if not parent then
+				unwatchFruitMutation(fruit)
+			end
+		end)
+	)
+
+	fruitMutationConnections[fruit] = connections
+end
+
 local function watchFolder(folder)
 	if watchedFolders[folder] then
 		return
@@ -7296,8 +7481,33 @@ local function watchFolder(folder)
 	watchedFolders[folder] = true
 	folderConnections[folder] = {}
 
-	table.insert(folderConnections[folder], folder.ChildAdded:Connect(queueCounterUpdate))
-	table.insert(folderConnections[folder], folder.ChildRemoved:Connect(queueCounterUpdate))
+	table.insert(
+		folderConnections[folder],
+		folder.ChildAdded:Connect(function(child)
+			if folder.Name == FRUITS_FOLDER_NAME then
+				watchFruitMutation(child)
+			end
+
+			queueCounterUpdate()
+		end)
+	)
+
+	table.insert(
+		folderConnections[folder],
+		folder.ChildRemoved:Connect(function(child)
+			if folder.Name == FRUITS_FOLDER_NAME then
+				unwatchFruitMutation(child)
+			end
+
+			queueCounterUpdate()
+		end)
+	)
+
+	if folder.Name == FRUITS_FOLDER_NAME then
+		for _, fruit in ipairs(folder:GetChildren()) do
+			watchFruitMutation(fruit)
+		end
+	end
 
 	queueCounterUpdate()
 end
@@ -7315,6 +7525,12 @@ local function unwatchFolder(folder)
 		end
 
 		folderConnections[folder] = nil
+	end
+
+	if folder.Name == FRUITS_FOLDER_NAME then
+		for _, fruit in ipairs(folder:GetChildren()) do
+			unwatchFruitMutation(fruit)
+		end
 	end
 
 	queueCounterUpdate()
@@ -7404,7 +7620,7 @@ minimizeButton.MouseButton1Click:Connect(function()
 	if minimized then
 		normalSize = main.Size
 		content.Visible = false
-		main.Size = UDim2.fromOffset(230, 32)
+		main.Size = UDim2.fromOffset(280, 32)
 		minimizeButton.Text = "+"
 	else
 		content.Visible = true
