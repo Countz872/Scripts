@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.0"
+local TEB_HUB_VERSION = "1.4.1"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -4244,12 +4244,12 @@ loadRecipientsFromBox = function()
 		-- Never replace a card while its username lookup is still running.
 		if existingData and existingData.LoadState == "Loading" then
 			addLog(username .. " is already loading.")
-			continue
+			return
 		end
 
 		if existingData and existingData.UserId then
 			addLog(username .. " is already loaded. Edit the target on the avatar card.")
-			continue
+			return
 		end
 
 		-- Remove stale, failed, or timed-out cards before a fresh retry.
