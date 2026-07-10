@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.7"
+local TEB_HUB_VERSION = "1.3.8"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2424,8 +2424,8 @@ local DEFAULT_PACKET_SEQUENCE_START_HEX = "3E"
 local RECIPIENT_PACKET_DELAY = 0.12
 local MAIL_BATCH_DELAY = 0.20
 local mailerRuntime = {
-	VerifyTimeout = 8,
-	VerifyInterval = 0.25,
+	VerifyTimeout = 25,
+	VerifyInterval = 0.35,
 	ServerDailyLimitReached = false,
 	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
 	WatchedLimitText = setmetatable({}, { __mode = "k" }),
@@ -5312,42 +5312,54 @@ local function markFruitsAsSent(fruits)
 end
 
 
-function mailerRuntime.IsFruitStillInInventory(fruit)
-	if not fruit then
-		return false
-	end
+function mailerRuntime.GetLiveMailableKeySet()
+	local liveKeys = {}
+	local liveInstances = {}
 
-	local instance = fruit.instance
-	if instance and instance.Parent and isTrackedInventoryInstance(instance) then
-		return true
-	end
+	for _, root in ipairs(getTrackedRoots()) do
+		for _, object in ipairs(root:GetDescendants()) do
+			if isHarvestedFruitInstance(object) then
+				local itemKey = getItemKeyFromInstance(object)
 
-	if fruit.itemKey then
-		for cachedInstance, cachedData in pairs(fruitCache) do
-			if cachedInstance.Parent
-				and isTrackedInventoryInstance(cachedInstance)
-				and cachedData.itemKey == fruit.itemKey
-			then
-				return true
+				if itemKey then
+					liveKeys[itemKey] = true
+				end
+
+				liveInstances[object] = true
 			end
 		end
 	end
 
-	return false
+	return liveKeys, liveInstances
 end
 
-function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds)
+function mailerRuntime.IsFruitStillInInventory(fruit, liveKeys, liveInstances)
+	if not fruit then
+		return false
+	end
+
+	-- ItemKey is the authoritative identity. This avoids stale cached instances
+	-- that may remain in Backpack briefly after the server accepted the mail.
+	if fruit.itemKey then
+		return liveKeys[fruit.itemKey] == true
+	end
+
+	local instance = fruit.instance
+	return instance ~= nil and liveInstances[instance] == true
+end
+
+function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds, username)
 	local startedAt = os.clock()
 	timeoutSeconds = tonumber(timeoutSeconds) or mailerRuntime.VerifyTimeout
+	local lastRemainingCount = #batch
 
 	while running and mailing and (os.clock() - startedAt) < timeoutSeconds do
-		rescanInventoryNow()
-
+		local liveKeys, liveInstances = mailerRuntime.GetLiveMailableKeySet()
 		local removed = {}
 		local remaining = {}
 
 		for _, fruit in ipairs(batch) do
-			if mailerRuntime.IsFruitStillInInventory(fruit) then
+			if mailerRuntime.IsFruitStillInInventory(fruit, liveKeys, liveInstances) then
 				table.insert(remaining, fruit)
 			else
 				table.insert(removed, fruit)
@@ -5358,16 +5370,41 @@ function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds)
 			return true, removed, remaining
 		end
 
+		if #remaining ~= lastRemainingCount then
+			lastRemainingCount = #remaining
+			addLog(
+				string.format(
+					"Mail verification: %d/%d fruit(s) removed.",
+					#removed,
+					#batch
+				),
+				Color3.fromRGB(170, 220, 255)
+			)
+		end
+
+		local elapsed = os.clock() - startedAt
+		local left = math.max(0, math.ceil(timeoutSeconds - elapsed))
+
+		if left % 3 == 0 then
+			addLog(
+				"Waiting for inventory confirmation"
+					.. (username and (" for " .. tostring(username)) or "")
+					.. "... "
+					.. tostring(left)
+					.. "s",
+				Color3.fromRGB(255, 220, 120)
+			)
+		end
+
 		task.wait(mailerRuntime.VerifyInterval)
 	end
 
-	rescanInventoryNow()
-
+	local liveKeys, liveInstances = mailerRuntime.GetLiveMailableKeySet()
 	local removed = {}
 	local remaining = {}
 
 	for _, fruit in ipairs(batch) do
-		if mailerRuntime.IsFruitStillInInventory(fruit) then
+		if mailerRuntime.IsFruitStillInInventory(fruit, liveKeys, liveInstances) then
 			table.insert(remaining, fruit)
 		else
 			table.insert(removed, fruit)
@@ -5375,81 +5412,6 @@ function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds)
 	end
 
 	return #remaining == 0, removed, remaining
-end
-
---// REFRESH / PREVIEW
-
-updateTargetFormattedLabel = function()
-	local targetValue = parseUserNumber(targetBox.Text)
-
-	if targetValue and targetValue > 0 then
-		targetFormattedLabel.Text = formatShortNumber(targetValue) .. " (" .. formatNumber(targetValue) .. ")"
-		targetFormattedLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-	else
-		local fallback = parseUserNumber(DEFAULT_TARGET_VALUE) or 1000000000
-		targetFormattedLabel.Text = "default " .. formatShortNumber(fallback)
-		targetFormattedLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-	end
-end
-
-refreshUI = function()
-	if not running then
-		return
-	end
-
-	local fruits = getCachedFruitsArray(false, false)
-	local mailable = getCachedFruitsArray(true, true)
-
-	local totalCurrent = 0
-	local totalBase = 0
-	local fallbackCount = 0
-
-	for _, fruit in ipairs(fruits) do
-		totalCurrent += fruit.currentValue
-		totalBase += fruit.baseValue
-
-		if fruit.multiSource == "fallback" then
-			fallbackCount += 1
-		end
-	end
-
-	statsLabel.Text = string.format(
-		"Fruits: %d | Mailable unsent: %d | Base: %s | Current: %s | Stock: %d | Fallback: %d",
-		#fruits,
-		#mailable,
-		formatShortNumber(totalBase),
-		formatShortNumber(totalCurrent),
-		lastStockCardCount,
-		fallbackCount
-	)
-end
-
-local function getRecipientsForPlanning()
-	local result = {}
-	local seen = {}
-
-	-- Loaded avatar cards are the main source, because each one has its own amount box.
-	for _, recipient in ipairs(loadedRecipients) do
-		local key = recipient.Username:lower()
-
-		if not seen[key] then
-			seen[key] = true
-			table.insert(result, recipient)
-		end
-	end
-
-	-- If someone typed usernames but did not click Load yet, include them with the default target.
-	-- They will not have avatar cards until Load is clicked.
-	for _, recipient in ipairs(parseRecipientQueries(recipientBox.Text)) do
-		local key = recipient.Username:lower()
-
-		if not seen[key] then
-			seen[key] = true
-			table.insert(result, recipient)
-		end
-	end
-
-	return result
 end
 
 local function getDefaultTargetValue()
@@ -6023,7 +5985,11 @@ local function sendPlans(plans, reason)
 						)
 
 						local fullyRemoved, removedFruits, remainingFruits =
-							mailerRuntime.VerifyBatchLeftInventory(batch, mailerRuntime.VerifyTimeout)
+							mailerRuntime.VerifyBatchLeftInventory(
+								batch,
+								mailerRuntime.VerifyTimeout,
+								username
+							)
 
 						if #removedFruits == 0 then
 							stoppedReason = mailerRuntime.ServerDailyLimitReached
@@ -6031,7 +5997,7 @@ local function sendPlans(plans, reason)
 								or "mail rejected: fruits stayed in inventory"
 
 							addLog(
-								"Mail rejected. Nothing was counted because all fruits are still in inventory.",
+								"Mail was not confirmed after 25 seconds. Nothing was counted because all selected fruit keys are still live in inventory.",
 								Color3.fromRGB(255, 90, 90)
 							)
 
@@ -6059,6 +6025,39 @@ local function sendPlans(plans, reason)
 						end
 
 						markFruitsAsSent(removedFruits)
+
+						-- Update progress immediately after confirmed inventory removal.
+						if mode == "Fruit" then
+							updateProgressValueRow(
+								username,
+								sentCount,
+								targetCount,
+								sentMails,
+								string.format(
+									"%d/%d | Base %s",
+									sentCount,
+									targetCount,
+									formatShortNumber(sentTotal)
+								),
+								sentCount >= targetCount
+									and Color3.fromRGB(120, 220, 130)
+									or Color3.fromRGB(255, 190, 90)
+							)
+						else
+							local remainingValue = math.max(0, targetValue - sentTotal)
+							updateProgressValueRow(
+								username,
+								sentTotal,
+								targetValue,
+								sentMails,
+								remainingValue <= 0
+									and "target reached"
+									or ("left " .. formatShortNumber(remainingValue)),
+								remainingValue <= 0
+									and Color3.fromRGB(120, 220, 130)
+									or Color3.fromRGB(255, 190, 90)
+							)
+						end
 
 						local allowanceOk, usedAfter, remainingAfterAllowance = pcall(recordMailUsage)
 						if allowanceOk then
@@ -6096,12 +6095,6 @@ local function sendPlans(plans, reason)
 						refreshUI()
 						task.wait(MAIL_BATCH_DELAY)
 
-						if mode == "Fruit" then
-							updateProgressValueRow(username, sentCount, targetCount, sentMails, string.format("%d/%d | Base %s", sentCount, targetCount, formatShortNumber(sentTotal)), sentCount >= targetCount and Color3.fromRGB(120, 220, 130) or Color3.fromRGB(255, 190, 90))
-						else
-							local remainingAfter = math.max(0, targetValue - sentTotal)
-							updateProgressValueRow(username, sentTotal, targetValue, sentMails, remainingAfter <= 0 and "target reached" or ("left " .. formatShortNumber(remainingAfter)), remainingAfter <= 0 and Color3.fromRGB(120, 220, 130) or Color3.fromRGB(255, 190, 90))
-						end
 					end
 				end
 
