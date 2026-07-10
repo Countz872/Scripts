@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.6"
+local TEB_HUB_VERSION = "1.3.7"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7835,6 +7835,11 @@ local function showPage(name)
 	for pageName, page in pairs(pages) do
 		page.Visible = pageName == name
 	end
+
+	local activeHost = moduleHosts and moduleHosts[name]
+	if activeHost then
+		activeHost.Visible = true
+	end
 	for buttonName, button in pairs(navButtons) do
 		local active = buttonName == name
 		button.BackgroundColor3 = active and Color3.fromRGB(75, 59, 150) or Color3.fromRGB(29, 30, 40)
@@ -8165,7 +8170,7 @@ local function normalizeMountedFrame(moduleName, frame)
 	end
 
 	for _, child in ipairs(host:GetChildren()) do
-		if child:IsA("GuiObject") then
+		if child:IsA("GuiObject") and child ~= frame then
 			child:Destroy()
 		end
 	end
@@ -8278,11 +8283,19 @@ local function mountModuleUI(moduleName)
 
 	task.defer(function()
 		if frame.Parent == host then
-			normalizeMountedFrame(moduleName, frame)
+			frame.Visible = true
+			frame.AnchorPoint = Vector2.new(0, 0)
+			frame.Position = UDim2.fromOffset(0, 0)
+			frame.Size = UDim2.fromScale(1, 1)
+			frame.ZIndex = 2
 		end
 	end)
 
-	setStatus(moduleName .. " controls mounted inside TEB Hub.")
+	if frame.Parent ~= host or not frame.Visible then
+		return false, moduleName .. " frame was lost during mounting."
+	end
+
+	setStatus(moduleName .. " controls mounted and visible inside TEB Hub.")
 	return true
 end
 
