@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.5"
+local TEB_HUB_VERSION = "1.2.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2644,6 +2644,7 @@ local addLog
 local addHistory
 local updateTargetFormattedLabel
 local loadRecipientsFromBox
+local recordMailUsage
 
 --// BASIC HELPERS
 
@@ -5776,7 +5777,7 @@ local function sendPlans(plans, reason)
 	prepareProgressRows(plans)
 
 	task.spawn(function()
-		local ok, err = pcall(function()
+		local ok, err = xpcall(function()
 			local needsCooldownBeforeNextMail = false
 
 			for _, plan in ipairs(plans) do
@@ -5867,16 +5868,42 @@ local function sendPlans(plans, reason)
 						Event:FireServer(buildRecipientPacket(username, recipientByte))
 						task.wait(RECIPIENT_PACKET_DELAY)
 						Event:FireServer(buildFruitMailPacket(itemKeys, fruitPacketByte, userId))
-						recordMailUsage()
-						task.wait(MAIL_BATCH_DELAY)
 
+						-- Register the sent batch before any optional tracking work.
 						needsCooldownBeforeNextMail = true
 						sentMails += 1
 						sentTotal += batchValue
 						sentCount += #batch
-						for _, fruit in ipairs(batch) do table.insert(sentFruits, fruit) end
+
+						for _, fruit in ipairs(batch) do
+							table.insert(sentFruits, fruit)
+						end
+
 						markFruitsAsSent(batch)
+
+						local usageOk, usageError = pcall(recordMailUsage)
+						if not usageOk then
+							addLog(
+								"Mail sent, but usage tracker failed: " .. tostring(usageError),
+								Color3.fromRGB(255, 190, 90)
+							)
+							if debugTrace then
+								debugTrace("USAGE TRACKER ERROR: " .. tostring(usageError))
+							end
+						end
+
+						addLog(
+							string.format(
+								"Registered mail %d | %d fruit(s) | %d fruit(s) total",
+								sentMails,
+								#batch,
+								sentCount
+							),
+							Color3.fromRGB(170, 255, 170)
+						)
+
 						refreshUI()
+						task.wait(MAIL_BATCH_DELAY)
 
 						if mode == "Fruit" then
 							updateProgressValueRow(username, sentCount, targetCount, sentMails, string.format("%d/%d | Base %s", sentCount, targetCount, formatShortNumber(sentTotal)), sentCount >= targetCount and Color3.fromRGB(120, 220, 130) or Color3.fromRGB(255, 190, 90))
@@ -5905,9 +5932,17 @@ local function sendPlans(plans, reason)
 				end
 				refreshUI()
 			end
-		end)
+		end, debug.traceback)
 
-		addLog(ok and "Mailing finished." or ("Send error: " .. tostring(err)), ok and Color3.fromRGB(170, 255, 170) or Color3.fromRGB(255, 120, 120))
+		addLog(
+			ok and "Mailing finished." or ("Send error: " .. tostring(err)),
+			ok and Color3.fromRGB(170, 255, 170) or Color3.fromRGB(255, 120, 120)
+		)
+
+		if not ok and debugTrace then
+			debugTrace("MAILING ERROR: " .. tostring(err))
+		end
+
 		mailing = false
 		sendButton.Text = "Mail"
 	end)
@@ -6053,7 +6088,7 @@ local function updateMailLimitDisplay()
 	end
 end
 
-local function recordMailUsage()
+recordMailUsage = function()
 	table.insert(mailUsageTimestamps, os.time())
 	pruneMailUsage()
 	updateMailLimitDisplay()
