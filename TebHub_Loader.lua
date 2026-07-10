@@ -6340,192 +6340,665 @@ local function stopModule(name)
 	moduleEnabled[name] = false
 end
 
--- UI
+-- ============================================================
+-- UNIFIED TEB HUB UI
+-- One responsive window, sidebar navigation, central module pages.
+-- ============================================================
+
 local gui = Instance.new("ScreenGui")
 gui.Name = "TEBHubUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = playerGui
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(300, 380)
-main.Position = UDim2.fromOffset(8, 54)
-main.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+main.Size = UDim2.fromOffset(920, 620)
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.Position = UDim2.fromScale(0.5, 0.5)
+main.BackgroundColor3 = Color3.fromRGB(17, 18, 24)
 main.BorderSizePixel = 0
+main.ClipsDescendants = true
 main.Parent = gui
 
-local scale = Instance.new("UIScale")
-scale.Parent = main
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = main
 
-local function fit()
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(106, 88, 220)
+mainStroke.Thickness = 1.5
+mainStroke.Transparency = 0.25
+mainStroke.Parent = main
+
+local hubScale = Instance.new("UIScale")
+hubScale.Name = "ResponsiveScale"
+hubScale.Scale = 1
+hubScale.Parent = main
+
+local function updateHubScale()
 	local camera = workspace.CurrentCamera
-	local viewport = camera and camera.ViewportSize or Vector2.new(360, 640)
-	scale.Scale = math.clamp(math.min((viewport.X - 12) / 300, (viewport.Y - 60) / 330, 1), 0.62, 1)
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	local safeWidth = math.max(320, viewport.X - 16)
+	local safeHeight = math.max(300, viewport.Y - 16)
+	hubScale.Scale = math.clamp(math.min(safeWidth / 920, safeHeight / 620, 1), 0.42, 1)
 end
-fit()
+
+updateHubScale()
 if workspace.CurrentCamera then
-	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(fit)
+	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateHubScale)
 end
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 10)
-corner.Parent = main
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 48)
+topBar.BackgroundColor3 = Color3.fromRGB(34, 29, 62)
+topBar.BorderSizePixel = 0
+topBar.Parent = main
 
-local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(125, 100, 230)
-stroke.Thickness = 1.4
-stroke.Transparency = 0.25
-stroke.Parent = main
+local topGradient = Instance.new("UIGradient")
+topGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(91, 65, 190)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(43, 67, 150)),
+})
+topGradient.Parent = topBar
 
-local top = Instance.new("Frame")
-top.Size = UDim2.new(1, 0, 0, 36)
-top.BackgroundColor3 = Color3.fromRGB(62, 48, 120)
-top.BorderSizePixel = 0
-top.Parent = main
+local hubTitle = Instance.new("TextLabel")
+hubTitle.Size = UDim2.new(1, -130, 1, 0)
+hubTitle.Position = UDim2.fromOffset(18, 0)
+hubTitle.BackgroundTransparency = 1
+hubTitle.Text = "TEB HUB"
+hubTitle.Font = Enum.Font.GothamBold
+hubTitle.TextSize = 18
+hubTitle.TextColor3 = Color3.new(1, 1, 1)
+hubTitle.TextXAlignment = Enum.TextXAlignment.Left
+hubTitle.Parent = topBar
 
-local topCorner = Instance.new("UICorner")
-topCorner.CornerRadius = UDim.new(0, 10)
-topCorner.Parent = top
+local hubSubtitle = Instance.new("TextLabel")
+hubSubtitle.Size = UDim2.fromOffset(310, 20)
+hubSubtitle.Position = UDim2.fromOffset(112, 14)
+hubSubtitle.BackgroundTransparency = 1
+hubSubtitle.Text = "Unified automation control center"
+hubSubtitle.Font = Enum.Font.Gotham
+hubSubtitle.TextSize = 11
+hubSubtitle.TextColor3 = Color3.fromRGB(210, 215, 240)
+hubSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+hubSubtitle.Parent = topBar
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -74, 1, 0)
-title.Position = UDim2.fromOffset(12, 0)
-title.BackgroundTransparency = 1
-title.Text = "TEB HUB"
-title.Font = Enum.Font.GothamBold
-title.TextSize = 15
-title.TextColor3 = Color3.new(1,1,1)
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = top
+local minimizeButton = Instance.new("TextButton")
+minimizeButton.Size = UDim2.fromOffset(34, 28)
+minimizeButton.Position = UDim2.new(1, -78, 0, 10)
+minimizeButton.BackgroundColor3 = Color3.fromRGB(58, 59, 78)
+minimizeButton.BorderSizePixel = 0
+minimizeButton.Text = "−"
+minimizeButton.Font = Enum.Font.GothamBold
+minimizeButton.TextSize = 18
+minimizeButton.TextColor3 = Color3.new(1, 1, 1)
+minimizeButton.Parent = topBar
 
-local minimize = Instance.new("TextButton")
-minimize.Size = UDim2.fromOffset(28, 24)
-minimize.Position = UDim2.new(1, -64, 0, 6)
-minimize.BackgroundColor3 = Color3.fromRGB(55,55,70)
-minimize.Text = "-"
-minimize.Font = Enum.Font.GothamBold
-minimize.TextSize = 16
-minimize.TextColor3 = Color3.new(1,1,1)
-minimize.BorderSizePixel = 0
-minimize.Parent = top
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.fromOffset(34, 28)
+closeButton.Position = UDim2.new(1, -40, 0, 10)
+closeButton.BackgroundColor3 = Color3.fromRGB(145, 48, 58)
+closeButton.BorderSizePixel = 0
+closeButton.Text = "X"
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextSize = 12
+closeButton.TextColor3 = Color3.new(1, 1, 1)
+closeButton.Parent = topBar
 
-local close = Instance.new("TextButton")
-close.Size = UDim2.fromOffset(28, 24)
-close.Position = UDim2.new(1, -32, 0, 6)
-close.BackgroundColor3 = Color3.fromRGB(130,45,50)
-close.Text = "X"
-close.Font = Enum.Font.GothamBold
-close.TextSize = 12
-close.TextColor3 = Color3.new(1,1,1)
-close.BorderSizePixel = 0
-close.Parent = top
-
-for _, b in ipairs({minimize, close}) do
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 5)
-	c.Parent = b
+for _, button in ipairs({minimizeButton, closeButton}) do
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 7)
+	corner.Parent = button
 end
 
-local body = Instance.new("Frame")
-body.Size = UDim2.new(1, -16, 1, -48)
-body.Position = UDim2.fromOffset(8, 42)
-body.BackgroundTransparency = 1
-body.Parent = main
+local sidebar = Instance.new("Frame")
+sidebar.Name = "Sidebar"
+sidebar.Size = UDim2.new(0, 190, 1, -48)
+sidebar.Position = UDim2.fromOffset(0, 48)
+sidebar.BackgroundColor3 = Color3.fromRGB(22, 23, 31)
+sidebar.BorderSizePixel = 0
+sidebar.Parent = main
 
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, 0, 0, 38)
-status.Position = UDim2.fromOffset(0, 0)
-status.BackgroundColor3 = Color3.fromRGB(28,28,36)
-status.BorderSizePixel = 0
-status.Text = "Ready."
-status.TextColor3 = Color3.fromRGB(180,220,255)
-status.Font = Enum.Font.Code
-status.TextSize = 10
-status.TextWrapped = true
-status.Parent = body
-local sc = Instance.new("UICorner"); sc.CornerRadius = UDim.new(0,7); sc.Parent = status
+local sidebarLine = Instance.new("Frame")
+sidebarLine.Size = UDim2.new(0, 1, 1, 0)
+sidebarLine.Position = UDim2.new(1, -1, 0, 0)
+sidebarLine.BackgroundColor3 = Color3.fromRGB(55, 56, 72)
+sidebarLine.BorderSizePixel = 0
+sidebarLine.Parent = sidebar
+
+local profile = Instance.new("Frame")
+profile.Size = UDim2.new(1, -20, 0, 66)
+profile.Position = UDim2.fromOffset(10, 12)
+profile.BackgroundColor3 = Color3.fromRGB(29, 30, 40)
+profile.BorderSizePixel = 0
+profile.Parent = sidebar
+local profileCorner = Instance.new("UICorner")
+profileCorner.CornerRadius = UDim.new(0, 9)
+profileCorner.Parent = profile
+
+local profileTitle = Instance.new("TextLabel")
+profileTitle.Size = UDim2.new(1, -16, 0, 24)
+profileTitle.Position = UDim2.fromOffset(8, 8)
+profileTitle.BackgroundTransparency = 1
+profileTitle.Text = player.DisplayName
+profileTitle.Font = Enum.Font.GothamBold
+profileTitle.TextSize = 12
+profileTitle.TextColor3 = Color3.new(1, 1, 1)
+profileTitle.TextXAlignment = Enum.TextXAlignment.Left
+profileTitle.Parent = profile
+
+local profileId = Instance.new("TextLabel")
+profileId.Size = UDim2.new(1, -16, 0, 20)
+profileId.Position = UDim2.fromOffset(8, 34)
+profileId.BackgroundTransparency = 1
+profileId.Text = "UserId: " .. tostring(player.UserId)
+profileId.Font = Enum.Font.Code
+profileId.TextSize = 10
+profileId.TextColor3 = Color3.fromRGB(165, 175, 205)
+profileId.TextXAlignment = Enum.TextXAlignment.Left
+profileId.Parent = profile
+
+local pageArea = Instance.new("Frame")
+pageArea.Name = "PageArea"
+pageArea.Size = UDim2.new(1, -190, 1, -48)
+pageArea.Position = UDim2.fromOffset(190, 48)
+pageArea.BackgroundColor3 = Color3.fromRGB(19, 20, 27)
+pageArea.BorderSizePixel = 0
+pageArea.Parent = main
+
+local pageHeader = Instance.new("Frame")
+pageHeader.Size = UDim2.new(1, 0, 0, 58)
+pageHeader.BackgroundColor3 = Color3.fromRGB(24, 25, 34)
+pageHeader.BorderSizePixel = 0
+pageHeader.Parent = pageArea
+
+local pageTitle = Instance.new("TextLabel")
+pageTitle.Size = UDim2.new(1, -30, 0, 28)
+pageTitle.Position = UDim2.fromOffset(18, 8)
+pageTitle.BackgroundTransparency = 1
+pageTitle.Text = "Dashboard"
+pageTitle.Font = Enum.Font.GothamBold
+pageTitle.TextSize = 17
+pageTitle.TextColor3 = Color3.new(1, 1, 1)
+pageTitle.TextXAlignment = Enum.TextXAlignment.Left
+pageTitle.Parent = pageHeader
+
+local pageDescription = Instance.new("TextLabel")
+pageDescription.Size = UDim2.new(1, -30, 0, 18)
+pageDescription.Position = UDim2.fromOffset(18, 34)
+pageDescription.BackgroundTransparency = 1
+pageDescription.Text = "Manage all TEB Hub modules from one place."
+pageDescription.Font = Enum.Font.Gotham
+pageDescription.TextSize = 10
+pageDescription.TextColor3 = Color3.fromRGB(165, 175, 205)
+pageDescription.TextXAlignment = Enum.TextXAlignment.Left
+pageDescription.Parent = pageHeader
+
+local pageContainer = Instance.new("Frame")
+pageContainer.Name = "Pages"
+pageContainer.Size = UDim2.new(1, -24, 1, -82)
+pageContainer.Position = UDim2.fromOffset(12, 70)
+pageContainer.BackgroundTransparency = 1
+pageContainer.ClipsDescendants = true
+pageContainer.Parent = pageArea
+
+local pages = {}
+local navButtons = {}
+local pageMeta = {
+	Dashboard = {"Dashboard", "Manage all TEB Hub modules from one place."},
+	Bloom = {"Bloom Automation", "Configure watering, KG filters, ratios, sprinklers, and cans."},
+	Mailer = {"Fruit Multi-Mailer", "Send by value or fruit quantity while tracking total values."},
+	Optimizer = {"Optimization + Counter", "Reduce visual load and monitor plant and fruit counts."},
+	Rejoin = {"Auto Rejoin", "Automatically reconnect after a connection error."},
+	Settings = {"Cloud & Defaults", "Manage UserId cloud settings and global defaults."},
+}
+
+local function createPage(name)
+	local page = Instance.new("Frame")
+	page.Name = name .. "Page"
+	page.Size = UDim2.fromScale(1, 1)
+	page.BackgroundTransparency = 1
+	page.Visible = false
+	page.Parent = pageContainer
+	pages[name] = page
+	return page
+end
+
+for _, name in ipairs({"Dashboard", "Bloom", "Mailer", "Optimizer", "Rejoin", "Settings"}) do
+	createPage(name)
+end
+
+local function makeNavButton(name, label, order)
+	local button = Instance.new("TextButton")
+	button.Name = name .. "Nav"
+	button.Size = UDim2.new(1, -20, 0, 40)
+	button.Position = UDim2.fromOffset(10, 90 + ((order - 1) * 46))
+	button.BackgroundColor3 = Color3.fromRGB(29, 30, 40)
+	button.BorderSizePixel = 0
+	button.Text = "  " .. label
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 11
+	button.TextColor3 = Color3.fromRGB(205, 210, 228)
+	button.TextXAlignment = Enum.TextXAlignment.Left
+	button.Parent = sidebar
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = button
+	navButtons[name] = button
+	return button
+end
+
+makeNavButton("Dashboard", "Dashboard", 1)
+makeNavButton("Bloom", "Bloom Automation", 2)
+makeNavButton("Mailer", "Fruit Mailer", 3)
+makeNavButton("Optimizer", "Optimizer", 4)
+makeNavButton("Rejoin", "Auto Rejoin", 5)
+makeNavButton("Settings", "Cloud & Defaults", 6)
+
+local currentPage = "Dashboard"
+
+local function showPage(name)
+	if not pages[name] then
+		return
+	end
+	currentPage = name
+	for pageName, page in pairs(pages) do
+		page.Visible = pageName == name
+	end
+	for buttonName, button in pairs(navButtons) do
+		local active = buttonName == name
+		button.BackgroundColor3 = active and Color3.fromRGB(75, 59, 150) or Color3.fromRGB(29, 30, 40)
+		button.TextColor3 = active and Color3.new(1, 1, 1) or Color3.fromRGB(205, 210, 228)
+	end
+	local meta = pageMeta[name]
+	pageTitle.Text = meta[1]
+	pageDescription.Text = meta[2]
+end
+
+for name, button in pairs(navButtons) do
+	button.MouseButton1Click:Connect(function()
+		showPage(name)
+	end)
+end
+
+local function addCorner(object, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 8)
+	corner.Parent = object
+	return corner
+end
+
+local function makePanel(parent, position, size)
+	local panel = Instance.new("Frame")
+	panel.Position = position
+	panel.Size = size
+	panel.BackgroundColor3 = Color3.fromRGB(26, 27, 36)
+	panel.BorderSizePixel = 0
+	panel.Parent = parent
+	addCorner(panel, 10)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(54, 56, 72)
+	stroke.Transparency = 0.35
+	stroke.Parent = panel
+	return panel
+end
+
+local function makeActionButton(parent, text, position, size)
+	local button = Instance.new("TextButton")
+	button.Position = position
+	button.Size = size
+	button.BackgroundColor3 = Color3.fromRGB(58, 59, 76)
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 11
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.Parent = parent
+	addCorner(button, 8)
+	return button
+end
+
+local statusBar = Instance.new("TextLabel")
+statusBar.Size = UDim2.new(1, -20, 0, 34)
+statusBar.Position = UDim2.new(0, 10, 1, -44)
+statusBar.BackgroundColor3 = Color3.fromRGB(28, 30, 41)
+statusBar.BorderSizePixel = 0
+statusBar.Text = "TEB Hub ready."
+statusBar.Font = Enum.Font.Code
+statusBar.TextSize = 10
+statusBar.TextColor3 = Color3.fromRGB(170, 215, 255)
+statusBar.TextWrapped = true
+statusBar.Parent = sidebar
+addCorner(statusBar, 8)
 
 local function setStatus(text, isError)
-	status.Text = tostring(text)
-	status.TextColor3 = isError and Color3.fromRGB(255,120,120) or Color3.fromRGB(180,220,255)
+	statusBar.Text = tostring(text)
+	statusBar.TextColor3 = isError and Color3.fromRGB(255, 125, 125) or Color3.fromRGB(170, 215, 255)
 end
 
-local buttons = {}
-local function makeToggle(name, label, y)
-	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(1, 0, 0, 38)
-	b.Position = UDim2.fromOffset(0, y)
-	b.BackgroundColor3 = Color3.fromRGB(58,58,70)
-	b.BorderSizePixel = 0
-	b.TextColor3 = Color3.new(1,1,1)
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
-	b.Parent = body
-	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,7); c.Parent = b
-	buttons[name] = {Button=b, Label=label}
-	return b
+-- Dashboard cards
+local dashboardPage = pages.Dashboard
+local dashboardGrid = Instance.new("UIGridLayout")
+dashboardGrid.CellSize = UDim2.new(0.5, -8, 0, 150)
+dashboardGrid.CellPadding = UDim2.fromOffset(12, 12)
+dashboardGrid.SortOrder = Enum.SortOrder.LayoutOrder
+dashboardGrid.Parent = dashboardPage
+
+local dashboardCards = {}
+
+local function makeModuleCard(name, titleText, descriptionText)
+	local card = Instance.new("Frame")
+	card.Name = name .. "Card"
+	card.BackgroundColor3 = Color3.fromRGB(27, 28, 38)
+	card.BorderSizePixel = 0
+	card.Parent = dashboardPage
+	addCorner(card, 10)
+
+	local heading = Instance.new("TextLabel")
+	heading.Size = UDim2.new(1, -20, 0, 28)
+	heading.Position = UDim2.fromOffset(10, 10)
+	heading.BackgroundTransparency = 1
+	heading.Text = titleText
+	heading.Font = Enum.Font.GothamBold
+	heading.TextSize = 13
+	heading.TextColor3 = Color3.new(1, 1, 1)
+	heading.TextXAlignment = Enum.TextXAlignment.Left
+	heading.Parent = card
+
+	local description = Instance.new("TextLabel")
+	description.Size = UDim2.new(1, -20, 0, 48)
+	description.Position = UDim2.fromOffset(10, 40)
+	description.BackgroundTransparency = 1
+	description.Text = descriptionText
+	description.Font = Enum.Font.Gotham
+	description.TextSize = 10
+	description.TextColor3 = Color3.fromRGB(175, 182, 205)
+	description.TextWrapped = true
+	description.TextXAlignment = Enum.TextXAlignment.Left
+	description.TextYAlignment = Enum.TextYAlignment.Top
+	description.Parent = card
+
+	local toggle = makeActionButton(card, "OFF", UDim2.new(0, 10, 1, -48), UDim2.new(0.52, -15, 0, 34))
+	local open = makeActionButton(card, "Open", UDim2.new(0.52, 5, 1, -48), UDim2.new(0.48, -15, 0, 34))
+
+	dashboardCards[name] = {Card = card, Toggle = toggle, Open = open}
+	return card
 end
 
-local bloomButton = makeToggle("Bloom", "Bloom Automation", 46)
-local mailerButton = makeToggle("Mailer", "Fruit Multi-Mailer", 90)
-local optimizerButton = makeToggle("Optimizer", "Optimization + Counter", 134)
-local rejoinButton = makeToggle("AutoRejoin", "Auto Rejoin", 178)
+makeModuleCard("Bloom", "Bloom Automation", "Automated watering with KG and ratio controls.")
+makeModuleCard("Mailer", "Fruit Multi-Mailer", "Value-based and fruit-count-based mailing.")
+makeModuleCard("Optimizer", "Optimization + Counter", "Visual cleanup and live plant/fruit counts.")
+makeModuleCard("AutoRejoin", "Auto Rejoin", "Reconnect automatically after connection errors.")
 
-local delayLabel = Instance.new("TextLabel")
-delayLabel.Size = UDim2.fromOffset(120, 30)
-delayLabel.Position = UDim2.fromOffset(0, 224)
-delayLabel.BackgroundTransparency = 1
-delayLabel.Text = "Rejoin delay (sec):"
-delayLabel.TextColor3 = Color3.fromRGB(230,230,235)
-delayLabel.Font = Enum.Font.Gotham
-delayLabel.TextSize = 11
-delayLabel.TextXAlignment = Enum.TextXAlignment.Left
-delayLabel.Parent = body
+-- Module page shells
+local moduleHosts = {}
+local pageEnableButtons = {}
+
+local function createModuleShell(pageName, moduleName, warningText)
+	local page = pages[pageName]
+	local controlBar = makePanel(page, UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 52))
+	local enableButton = makeActionButton(controlBar, "Enable", UDim2.fromOffset(10, 9), UDim2.fromOffset(130, 34))
+	pageEnableButtons[moduleName] = enableButton
+
+	local warning = Instance.new("TextLabel")
+	warning.Size = UDim2.new(1, -160, 1, 0)
+	warning.Position = UDim2.fromOffset(152, 0)
+	warning.BackgroundTransparency = 1
+	warning.Text = warningText or ""
+	warning.Font = Enum.Font.Gotham
+	warning.TextSize = 10
+	warning.TextColor3 = Color3.fromRGB(205, 184, 120)
+	warning.TextWrapped = true
+	warning.TextXAlignment = Enum.TextXAlignment.Left
+	warning.Parent = controlBar
+
+	local host = Instance.new("Frame")
+	host.Name = moduleName .. "Host"
+	host.Size = UDim2.new(1, 0, 1, -64)
+	host.Position = UDim2.fromOffset(0, 64)
+	host.BackgroundColor3 = Color3.fromRGB(22, 23, 31)
+	host.BorderSizePixel = 0
+	host.ClipsDescendants = true
+	host.Parent = page
+	addCorner(host, 10)
+
+	local empty = Instance.new("TextLabel")
+	empty.Name = "EmptyMessage"
+	empty.Size = UDim2.fromScale(1, 1)
+	empty.BackgroundTransparency = 1
+	empty.Text = "Enable " .. pageMeta[pageName][1] .. " to load its controls here."
+	empty.Font = Enum.Font.Gotham
+	empty.TextSize = 12
+	empty.TextColor3 = Color3.fromRGB(145, 153, 180)
+	empty.Parent = host
+
+	moduleHosts[moduleName] = host
+end
+
+createModuleShell("Bloom", "Bloom", "All Bloom controls and statistics appear in this page.")
+createModuleShell("Mailer", "Mailer", "Mailer history, targets, and progress remain inside this page.")
+createModuleShell("Optimizer", "Optimizer", "Disabling stops future processing; deleted visuals cannot be restored.")
+
+-- Rejoin page
+local rejoinPage = pages.Rejoin
+local rejoinPanel = makePanel(rejoinPage, UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 180))
+
+local rejoinToggle = makeActionButton(rejoinPanel, "Auto Rejoin", UDim2.fromOffset(16, 18), UDim2.fromOffset(190, 38))
+
+local delayTitle = Instance.new("TextLabel")
+delayTitle.Size = UDim2.fromOffset(180, 26)
+delayTitle.Position = UDim2.fromOffset(16, 72)
+delayTitle.BackgroundTransparency = 1
+delayTitle.Text = "Rejoin delay in seconds"
+delayTitle.Font = Enum.Font.GothamBold
+delayTitle.TextSize = 11
+delayTitle.TextColor3 = Color3.fromRGB(225, 228, 240)
+delayTitle.TextXAlignment = Enum.TextXAlignment.Left
+delayTitle.Parent = rejoinPanel
 
 local delayBox = Instance.new("TextBox")
-delayBox.Size = UDim2.fromOffset(90, 28)
-delayBox.Position = UDim2.new(1, -90, 0, 224)
-delayBox.BackgroundColor3 = Color3.fromRGB(38,38,48)
+delayBox.Size = UDim2.fromOffset(130, 34)
+delayBox.Position = UDim2.fromOffset(210, 68)
+delayBox.BackgroundColor3 = Color3.fromRGB(38, 40, 52)
 delayBox.BorderSizePixel = 0
 delayBox.Text = tostring(rejoinDelay)
-delayBox.TextColor3 = Color3.new(1,1,1)
+delayBox.ClearTextOnFocus = false
 delayBox.Font = Enum.Font.GothamBold
 delayBox.TextSize = 12
-delayBox.ClearTextOnFocus = false
-delayBox.Parent = body
-local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(0,6); dc.Parent = delayBox
+delayBox.TextColor3 = Color3.new(1, 1, 1)
+delayBox.Parent = rejoinPanel
+addCorner(delayBox, 8)
 
-local defaultButton = Instance.new("TextButton")
-defaultButton.Size = UDim2.new(1, 0, 0, 34)
-defaultButton.Position = UDim2.fromOffset(0, 260)
-defaultButton.BackgroundColor3 = Color3.fromRGB(105, 75, 35)
-defaultButton.BorderSizePixel = 0
-defaultButton.Text = "Set Current Settings as Default"
-defaultButton.TextColor3 = Color3.new(1, 1, 1)
-defaultButton.Font = Enum.Font.GothamBold
-defaultButton.TextSize = 11
-defaultButton.Parent = body
-local defaultCorner = Instance.new("UICorner")
-defaultCorner.CornerRadius = UDim.new(0, 7)
-defaultCorner.Parent = defaultButton
+local rejoinInfo = Instance.new("TextLabel")
+rejoinInfo.Size = UDim2.new(1, -32, 0, 46)
+rejoinInfo.Position = UDim2.fromOffset(16, 118)
+rejoinInfo.BackgroundTransparency = 1
+rejoinInfo.Text = "When Roblox reports a connection error, TEB Hub counts down and teleports you back into the current place."
+rejoinInfo.Font = Enum.Font.Gotham
+rejoinInfo.TextSize = 10
+rejoinInfo.TextWrapped = true
+rejoinInfo.TextColor3 = Color3.fromRGB(170, 180, 205)
+rejoinInfo.TextXAlignment = Enum.TextXAlignment.Left
+rejoinInfo.TextYAlignment = Enum.TextYAlignment.Top
+rejoinInfo.Parent = rejoinPanel
 
-local note = Instance.new("TextLabel")
-note.Size = UDim2.new(1, 0, 0, 32)
-note.Position = UDim2.fromOffset(0, 300)
-note.BackgroundTransparency = 1
-note.Text = "Optimizer OFF stops future processing; removed visuals cannot be restored."
-note.TextColor3 = Color3.fromRGB(255,210,120)
-note.Font = Enum.Font.Gotham
-note.TextSize = 9
-note.TextWrapped = true
-note.Parent = body
+-- Settings page
+local settingsPage = pages.Settings
+local cloudPanel = makePanel(settingsPage, UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 210))
 
-local function refreshButton(name)
-	local data = buttons[name]
-	local on = moduleEnabled[name]
-	data.Button.Text = data.Label .. ": " .. (on and "ON" or "OFF")
-	data.Button.BackgroundColor3 = on and Color3.fromRGB(45,125,65) or Color3.fromRGB(58,58,70)
+local cloudTitle = Instance.new("TextLabel")
+cloudTitle.Size = UDim2.new(1, -24, 0, 30)
+cloudTitle.Position = UDim2.fromOffset(12, 12)
+cloudTitle.BackgroundTransparency = 1
+cloudTitle.Text = "UserId Cloud Configuration"
+cloudTitle.Font = Enum.Font.GothamBold
+cloudTitle.TextSize = 14
+cloudTitle.TextColor3 = Color3.new(1, 1, 1)
+cloudTitle.TextXAlignment = Enum.TextXAlignment.Left
+cloudTitle.Parent = cloudPanel
+
+local cloudText = Instance.new("TextLabel")
+cloudText.Size = UDim2.new(1, -24, 0, 72)
+cloudText.Position = UDim2.fromOffset(12, 46)
+cloudText.BackgroundTransparency = 1
+cloudText.Text = "Player-specific settings are stored under UserId " .. tostring(player.UserId) .. ". Existing player settings always take priority over the global default."
+cloudText.Font = Enum.Font.Gotham
+cloudText.TextSize = 10
+cloudText.TextWrapped = true
+cloudText.TextColor3 = Color3.fromRGB(175, 182, 205)
+cloudText.TextXAlignment = Enum.TextXAlignment.Left
+cloudText.TextYAlignment = Enum.TextYAlignment.Top
+cloudText.Parent = cloudPanel
+
+local defaultButton = makeActionButton(cloudPanel, "Set Current Settings as Default", UDim2.fromOffset(12, 130), UDim2.fromOffset(270, 38))
+defaultButton.BackgroundColor3 = Color3.fromRGB(112, 77, 34)
+
+local cloudSourceLabel = Instance.new("TextLabel")
+cloudSourceLabel.Size = UDim2.new(1, -306, 0, 38)
+cloudSourceLabel.Position = UDim2.fromOffset(294, 130)
+cloudSourceLabel.BackgroundTransparency = 1
+cloudSourceLabel.Text = "Loaded source: " .. tostring(loadedHubSource)
+cloudSourceLabel.Font = Enum.Font.Code
+cloudSourceLabel.TextSize = 10
+cloudSourceLabel.TextColor3 = Color3.fromRGB(155, 205, 255)
+cloudSourceLabel.TextXAlignment = Enum.TextXAlignment.Left
+cloudSourceLabel.Parent = cloudPanel
+
+local moduleGuiNames = {
+	Bloom = "BloomAutomationUI",
+	Mailer = "CompactFruitMultiMailer",
+	Optimizer = "PlantFruitCounterUI",
+}
+
+local function clearHost(moduleName)
+	local host = moduleHosts[moduleName]
+	if not host then
+		return
+	end
+	for _, child in ipairs(host:GetChildren()) do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+	local empty = Instance.new("TextLabel")
+	empty.Name = "EmptyMessage"
+	empty.Size = UDim2.fromScale(1, 1)
+	empty.BackgroundTransparency = 1
+	empty.Text = "Enable this module to load its controls here."
+	empty.Font = Enum.Font.Gotham
+	empty.TextSize = 12
+	empty.TextColor3 = Color3.fromRGB(145, 153, 180)
+	empty.Parent = host
+end
+
+local function normalizeMountedFrame(moduleName, frame)
+	local host = moduleHosts[moduleName]
+	if not host or not frame then
+		return
+	end
+
+	for _, child in ipairs(host:GetChildren()) do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+
+	frame.Parent = host
+	frame.AnchorPoint = Vector2.new(0, 0)
+	frame.Position = UDim2.fromOffset(0, 0)
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.Visible = true
+
+	for _, obj in ipairs(frame:GetDescendants()) do
+		if obj:IsA("UIScale") then
+			obj.Scale = 1
+		end
+	end
+
+	local namedTopBar = frame:FindFirstChild("TopBar")
+	if namedTopBar and namedTopBar:IsA("GuiObject") then
+		namedTopBar.Visible = false
+	end
+
+	if moduleName == "Bloom" then
+		local bloomBody = frame:FindFirstChildWhichIsA("ScrollingFrame")
+		if bloomBody then
+			bloomBody.Position = UDim2.fromOffset(0, 0)
+			bloomBody.Size = UDim2.fromScale(1, 1)
+			bloomBody.ScrollBarThickness = 5
+		end
+		for _, child in ipairs(frame:GetChildren()) do
+			if child:IsA("Frame") and child ~= bloomBody and child.AbsoluteSize.Y <= 45 then
+				child.Visible = false
+			end
+		end
+	elseif moduleName == "Mailer" then
+		local content = frame:FindFirstChild("Content")
+		if content and content:IsA("GuiObject") then
+			content.Position = UDim2.fromOffset(6, 6)
+			content.Size = UDim2.new(1, -12, 1, -12)
+		end
+	elseif moduleName == "Optimizer" then
+		local content = frame:FindFirstChild("Content")
+		if content and content:IsA("GuiObject") then
+			content.Position = UDim2.fromOffset(20, 20)
+			content.Size = UDim2.new(1, -40, 1, -40)
+		end
+	end
+end
+
+local function mountModuleUI(moduleName)
+	local guiName = moduleGuiNames[moduleName]
+	if not guiName then
+		return
+	end
+
+	task.spawn(function()
+		local moduleGui = playerGui:WaitForChild(guiName, 8)
+		if not moduleGui then
+			setStatus(moduleName .. " started, but its UI was not found.", true)
+			return
+		end
+
+		local frame
+		if moduleName == "Mailer" then
+			frame = moduleGui:FindFirstChild("Main")
+		elseif moduleName == "Optimizer" then
+			frame = moduleGui:FindFirstChild("MainFrame")
+		else
+			frame = moduleGui:FindFirstChildWhichIsA("Frame")
+		end
+
+		if not frame then
+			setStatus(moduleName .. " UI frame was not found.", true)
+			return
+		end
+
+		normalizeMountedFrame(moduleName, frame)
+		moduleGui:Destroy()
+		setStatus(moduleName .. " controls mounted inside TEB Hub.")
+	end)
+end
+
+local function refreshModuleVisuals()
+	for name, data in pairs(dashboardCards) do
+		local enabled = moduleEnabled[name] == true
+		data.Toggle.Text = enabled and "Enabled" or "Disabled"
+		data.Toggle.BackgroundColor3 = enabled and Color3.fromRGB(42, 126, 69) or Color3.fromRGB(58, 59, 76)
+	end
+
+	for name, button in pairs(pageEnableButtons) do
+		local enabled = moduleEnabled[name] == true
+		button.Text = enabled and "Disable Module" or "Enable Module"
+		button.BackgroundColor3 = enabled and Color3.fromRGB(42, 126, 69) or Color3.fromRGB(58, 59, 76)
+	end
+
+	local rejoinOn = moduleEnabled.AutoRejoin == true
+	rejoinToggle.Text = rejoinOn and "Auto Rejoin: ON" or "Auto Rejoin: OFF"
+	rejoinToggle.BackgroundColor3 = rejoinOn and Color3.fromRGB(42, 126, 69) or Color3.fromRGB(58, 59, 76)
 end
 
 local function setModule(name, wanted)
@@ -6537,35 +7010,55 @@ local function setModule(name, wanted)
 		else
 			moduleEnabled[name] = true
 			setStatus(name .. " started.")
+			mountModuleUI(name)
 		end
 	else
 		stopModule(name)
+		clearHost(name)
 		setStatus(name .. " stopped.")
 	end
-	refreshButton(name)
+	refreshModuleVisuals()
 	queueHubCloudSave()
 end
 
-bloomButton.MouseButton1Click:Connect(function()
-	setModule("Bloom", not moduleEnabled.Bloom)
-end)
+for name, data in pairs(dashboardCards) do
+	if name ~= "AutoRejoin" then
+		data.Toggle.MouseButton1Click:Connect(function()
+			setModule(name, not moduleEnabled[name])
+		end)
+		data.Open.MouseButton1Click:Connect(function()
+			showPage(name)
+		end)
+	else
+		data.Toggle.MouseButton1Click:Connect(function()
+			moduleEnabled.AutoRejoin = not moduleEnabled.AutoRejoin
+			if not moduleEnabled.AutoRejoin then
+				rejoining = false
+			end
+			refreshModuleVisuals()
+			queueHubCloudSave()
+			setStatus("Auto Rejoin " .. (moduleEnabled.AutoRejoin and "enabled." or "disabled."))
+		end)
+		data.Open.MouseButton1Click:Connect(function()
+			showPage("Rejoin")
+		end)
+	end
+end
 
-mailerButton.MouseButton1Click:Connect(function()
-	setModule("Mailer", not moduleEnabled.Mailer)
-end)
+for name, button in pairs(pageEnableButtons) do
+	button.MouseButton1Click:Connect(function()
+		setModule(name, not moduleEnabled[name])
+	end)
+end
 
-optimizerButton.MouseButton1Click:Connect(function()
-	setModule("Optimizer", not moduleEnabled.Optimizer)
-end)
-
-rejoinButton.MouseButton1Click:Connect(function()
+rejoinToggle.MouseButton1Click:Connect(function()
 	moduleEnabled.AutoRejoin = not moduleEnabled.AutoRejoin
 	if not moduleEnabled.AutoRejoin then
 		rejoining = false
 	end
-	refreshButton("AutoRejoin")
-	setStatus("Auto Rejoin " .. (moduleEnabled.AutoRejoin and "enabled." or "disabled."))
+	refreshModuleVisuals()
 	queueHubCloudSave()
+	setStatus("Auto Rejoin " .. (moduleEnabled.AutoRejoin and "enabled." or "disabled."))
 end)
 
 delayBox.FocusLost:Connect(function()
@@ -6573,8 +7066,8 @@ delayBox.FocusLost:Connect(function()
 	if value and value >= 0 and value <= 3600 then
 		rejoinDelay = math.floor(value)
 		delayBox.Text = tostring(rejoinDelay)
-		setStatus("Auto Rejoin delay set to " .. rejoinDelay .. " seconds.")
 		queueHubCloudSave()
+		setStatus("Auto Rejoin delay set to " .. tostring(rejoinDelay) .. " seconds.")
 	else
 		delayBox.Text = tostring(rejoinDelay)
 		setStatus("Delay must be between 0 and 3600 seconds.", true)
@@ -6607,7 +7100,7 @@ defaultButton.MouseButton1Click:Connect(function()
 	end
 
 	if #failures == 0 then
-		setStatus("Default config saved. Existing UserId saves still take priority.")
+		setStatus("Default config saved. Existing UserId settings still take priority.")
 	else
 		setStatus("Some defaults failed: " .. table.concat(failures, " | "), true)
 	end
@@ -6632,7 +7125,7 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
 			if not hubRunning or not moduleEnabled.AutoRejoin or not rejoining then
 				return
 			end
-			setStatus("Connection error. Rejoining in " .. remaining .. "s.")
+			setStatus("Connection error. Rejoining in " .. tostring(remaining) .. "s.")
 			task.wait(1)
 		end
 
@@ -6652,68 +7145,66 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
 	end)
 end)
 
--- Drag
+-- Drag the one unified window.
 do
 	local dragging = false
 	local dragStart
-	local startPos
-	top.InputBegan:Connect(function(input)
+	local startPosition
+
+	topBar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
-			startPos = main.Position
+			startPosition = main.Position
 		end
 	end)
+
 	UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = false
 		end
 	end)
+
 	UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-			hubSavedX = main.Position.X.Offset
-			hubSavedY = main.Position.Y.Offset
+			main.Position = UDim2.new(
+				startPosition.X.Scale,
+				startPosition.X.Offset + delta.X,
+				startPosition.Y.Scale,
+				startPosition.Y.Offset + delta.Y
+			)
 		end
 	end)
 end
 
-local minimizedState = hubMinimized
-minimize.MouseButton1Click:Connect(function()
-	minimizedState = not minimizedState
-	body.Visible = not minimizedState
-	main.Size = minimizedState and UDim2.fromOffset(300,36) or UDim2.fromOffset(300,380)
-	minimize.Text = minimizedState and "+" or "-"
-	hubMinimized = minimizedState
-	queueHubCloudSave()
+local minimized = false
+minimizeButton.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	sidebar.Visible = not minimized
+	pageArea.Visible = not minimized
+	main.Size = minimized and UDim2.fromOffset(920, 48) or UDim2.fromOffset(920, 620)
+	minimizeButton.Text = minimized and "+" or "−"
 end)
 
-close.MouseButton1Click:Connect(function()
+closeButton.MouseButton1Click:Connect(function()
 	hubRunning = false
 	rejoining = false
-	for _, name in ipairs({"Bloom","Mailer","Optimizer"}) do
+	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
 		stopModule(name)
 	end
 	gui:Destroy()
 end)
 
-if minimizedState then
-	body.Visible = false
-	main.Size = UDim2.fromOffset(300, 36)
-	minimize.Text = "+"
-end
-
-for name in pairs(buttons) do
-	refreshButton(name)
-end
+refreshModuleVisuals()
+showPage("Dashboard")
 
 task.defer(function()
 	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
 		if moduleEnabled[name] then
-			local wanted = true
+			local shouldStart = true
 			moduleEnabled[name] = false
-			setModule(name, wanted)
+			setModule(name, shouldStart)
 		end
 	end
 end)
