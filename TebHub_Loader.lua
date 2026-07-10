@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.7"
+local TEB_HUB_VERSION = "1.1.8"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -3072,49 +3072,70 @@ for _, button in ipairs({ previewButton, sendButton, logsButton }) do
 	c.Parent = button
 end
 
-local targetModeButton = Instance.new("TextButton")
-targetModeButton.Name = "TargetMode"
-targetModeButton.Size = UDim2.fromOffset(92, 24)
-targetModeButton.Position = UDim2.fromOffset(0, 144)
-targetModeButton.BackgroundColor3 = Color3.fromRGB(55, 62, 78)
-targetModeButton.BorderSizePixel = 0
-targetModeButton.Text = "Mode: Value"
-targetModeButton.Font = Enum.Font.GothamBold
-targetModeButton.TextSize = 10
-targetModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-targetModeButton.Parent = content
+local valueModeButton = Instance.new("TextButton")
+valueModeButton.Name = "ValueModeCheck"
+valueModeButton.Size = UDim2.fromOffset(96, 24)
+valueModeButton.Position = UDim2.fromOffset(0, 144)
+valueModeButton.BackgroundColor3 = Color3.fromRGB(55, 62, 78)
+valueModeButton.BorderSizePixel = 0
+valueModeButton.Text = "☑ Value"
+valueModeButton.Font = Enum.Font.GothamBold
+valueModeButton.TextSize = 10
+valueModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+valueModeButton.Parent = content
+
+local fruitModeButton = Instance.new("TextButton")
+fruitModeButton.Name = "FruitModeCheck"
+fruitModeButton.Size = UDim2.fromOffset(96, 24)
+fruitModeButton.Position = UDim2.fromOffset(102, 144)
+fruitModeButton.BackgroundColor3 = Color3.fromRGB(55, 62, 78)
+fruitModeButton.BorderSizePixel = 0
+fruitModeButton.Text = "☐ Fruits"
+fruitModeButton.Font = Enum.Font.GothamBold
+fruitModeButton.TextSize = 10
+fruitModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+fruitModeButton.Parent = content
+
+local fruitTargetLabel = Instance.new("TextLabel")
+fruitTargetLabel.Size = UDim2.fromOffset(58, 24)
+fruitTargetLabel.Position = UDim2.fromOffset(0, 174)
+fruitTargetLabel.BackgroundTransparency = 1
+fruitTargetLabel.Text = "Fruit:"
+fruitTargetLabel.Font = Enum.Font.GothamBold
+fruitTargetLabel.TextSize = 10
+fruitTargetLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+fruitTargetLabel.TextXAlignment = Enum.TextXAlignment.Left
+fruitTargetLabel.Parent = content
 
 local fruitNameBox = Instance.new("TextBox")
 fruitNameBox.Name = "TargetFruitName"
-fruitNameBox.Size = UDim2.new(1, -178, 0, 24)
-fruitNameBox.Position = UDim2.fromOffset(98, 144)
+fruitNameBox.Size = UDim2.new(1, -150, 0, 24)
+fruitNameBox.Position = UDim2.fromOffset(48, 174)
 fruitNameBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 fruitNameBox.BorderSizePixel = 0
-fruitNameBox.Text = DEFAULT_TARGET_FRUIT
+fruitNameBox.Text = mailerCloudData and tostring(mailerCloudData.fruitName or DEFAULT_TARGET_FRUIT) or DEFAULT_TARGET_FRUIT
 fruitNameBox.PlaceholderText = "Fruit name"
 fruitNameBox.Font = Enum.Font.Gotham
 fruitNameBox.TextSize = 10
 fruitNameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 fruitNameBox.ClearTextOnFocus = false
-fruitNameBox.Visible = false
 fruitNameBox.Parent = content
 
 local fruitCountBox = Instance.new("TextBox")
 fruitCountBox.Name = "TargetFruitCount"
-fruitCountBox.Size = UDim2.fromOffset(74, 24)
-fruitCountBox.Position = UDim2.new(1, -74, 0, 144)
+fruitCountBox.Size = UDim2.fromOffset(96, 24)
+fruitCountBox.Position = UDim2.new(1, -96, 0, 174)
 fruitCountBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 fruitCountBox.BorderSizePixel = 0
 fruitCountBox.Text = tostring(mailerCloudData and tonumber(mailerCloudData.fruitCount) or DEFAULT_TARGET_FRUIT_COUNT)
-fruitCountBox.PlaceholderText = "Count"
+fruitCountBox.PlaceholderText = "Fruit count"
 fruitCountBox.Font = Enum.Font.GothamBold
 fruitCountBox.TextSize = 10
 fruitCountBox.TextColor3 = Color3.fromRGB(255, 220, 120)
 fruitCountBox.ClearTextOnFocus = false
-fruitCountBox.Visible = false
 fruitCountBox.Parent = content
 
-for _, object in ipairs({ targetModeButton, fruitNameBox, fruitCountBox }) do
+for _, object in ipairs({ valueModeButton, fruitModeButton, fruitNameBox, fruitCountBox }) do
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, 7)
 	c.Parent = object
@@ -3123,7 +3144,7 @@ end
 local avatarFrame = Instance.new("ScrollingFrame")
 avatarFrame.Name = "Avatars"
 avatarFrame.Size = UDim2.new(1, 0, 0, 54)
-avatarFrame.Position = UDim2.fromOffset(0, 178)
+avatarFrame.Position = UDim2.fromOffset(0, 208)
 avatarFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 avatarFrame.BorderSizePixel = 0
 avatarFrame.ScrollBarThickness = 4
@@ -3151,8 +3172,8 @@ avatarLayout.Parent = avatarFrame
 
 local previewLabel = Instance.new("TextLabel")
 previewLabel.Name = "PreviewText"
-previewLabel.Size = UDim2.new(1, 0, 0, 34)
-previewLabel.Position = UDim2.fromOffset(0, 238)
+previewLabel.Size = UDim2.new(1, 0, 0, 96)
+previewLabel.Position = UDim2.fromOffset(0, 268)
 previewLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
 previewLabel.BorderSizePixel = 0
 previewLabel.Text = "Preview: none"
@@ -3160,13 +3181,15 @@ previewLabel.Font = Enum.Font.Gotham
 previewLabel.TextSize = 10
 previewLabel.TextColor3 = Color3.fromRGB(170, 220, 255)
 previewLabel.TextXAlignment = Enum.TextXAlignment.Left
-previewLabel.TextYAlignment = Enum.TextYAlignment.Center
+previewLabel.TextYAlignment = Enum.TextYAlignment.Top
 previewLabel.TextWrapped = true
 previewLabel.Parent = content
 
 local previewPadding = Instance.new("UIPadding")
 previewPadding.PaddingLeft = UDim.new(0, 8)
 previewPadding.PaddingRight = UDim.new(0, 8)
+previewPadding.PaddingTop = UDim.new(0, 6)
+previewPadding.PaddingBottom = UDim.new(0, 6)
 previewPadding.Parent = previewLabel
 
 local previewCorner = Instance.new("UICorner")
@@ -3176,7 +3199,7 @@ previewCorner.Parent = previewLabel
 local progressTitle = Instance.new("TextLabel")
 progressTitle.Name = "ProgressTitle"
 progressTitle.Size = UDim2.new(1, 0, 0, 18)
-progressTitle.Position = UDim2.fromOffset(0, 278)
+progressTitle.Position = UDim2.fromOffset(0, 370)
 progressTitle.BackgroundTransparency = 1
 progressTitle.Text = "Mail Progress"
 progressTitle.Font = Enum.Font.GothamBold
@@ -3188,7 +3211,7 @@ progressTitle.Parent = content
 local progressFrame = Instance.new("ScrollingFrame")
 progressFrame.Name = "Progress"
 progressFrame.Size = UDim2.new(1, 0, 0, 58)
-progressFrame.Position = UDim2.fromOffset(0, 298)
+progressFrame.Position = UDim2.fromOffset(0, 390)
 progressFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
 progressFrame.BorderSizePixel = 0
 progressFrame.ScrollBarThickness = 5
@@ -3215,7 +3238,7 @@ progressLayout.Parent = progressFrame
 local historyTitle = Instance.new("TextLabel")
 historyTitle.Name = "HistoryTitle"
 historyTitle.Size = UDim2.new(1, 0, 0, 18)
-historyTitle.Position = UDim2.fromOffset(0, 362)
+historyTitle.Position = UDim2.fromOffset(0, 454)
 historyTitle.BackgroundTransparency = 1
 historyTitle.Text = "Trade History"
 historyTitle.Font = Enum.Font.GothamBold
@@ -3227,7 +3250,7 @@ historyTitle.Parent = content
 local historyFrame = Instance.new("ScrollingFrame")
 historyFrame.Name = "History"
 historyFrame.Size = UDim2.new(1, 0, 0, 330)
-historyFrame.Position = UDim2.fromOffset(0, 384)
+historyFrame.Position = UDim2.fromOffset(0, 476)
 historyFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
 historyFrame.BorderSizePixel = 0
 historyFrame.ScrollBarThickness = 6
@@ -3254,7 +3277,7 @@ historyLayout.Parent = historyFrame
 local logFrame = Instance.new("ScrollingFrame")
 logFrame.Name = "Logs"
 logFrame.Size = UDim2.new(1, 0, 0, 120)
-logFrame.Position = UDim2.fromOffset(0, 730)
+logFrame.Position = UDim2.fromOffset(0, 822)
 logFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
 logFrame.BorderSizePixel = 0
 logFrame.ScrollBarThickness = 6
@@ -5075,28 +5098,63 @@ local function makePreview()
 		end
 	end
 
+	local previewLines = {}
+
 	if targetMode == "Fruit" then
-		previewLabel.Text = string.format(
-			"Preview: %s x%d/user | %d selected | %d mail%s | Base %s | %d waiting",
-			targetFruit,
-			targetFruitCount,
-			totalFruitCount,
-			mailCount,
-			mailCount == 1 and "" or "s",
-			formatShortNumber(totalSelected),
-			waitingUsers
+		table.insert(
+			previewLines,
+			string.format(
+				"Fruit preview — %s x%d per account | Total base %s",
+				targetFruit,
+				targetFruitCount,
+				formatShortNumber(totalSelected)
+			)
 		)
 	else
-		previewLabel.Text = string.format(
-			"Preview value: %d fruit%s | %d mail%s | Base %s | %d waiting refill",
-			totalFruitCount,
-			totalFruitCount == 1 and "" or "s",
-			mailCount,
-			mailCount == 1 and "" or "s",
-			formatShortNumber(totalSelected),
-			waitingUsers
+		table.insert(
+			previewLines,
+			string.format(
+				"Value preview — %d fruit%s | %d mail%s | Total base %s",
+				totalFruitCount,
+				totalFruitCount == 1 and "" or "s",
+				mailCount,
+				mailCount == 1 and "" or "s",
+				formatShortNumber(totalSelected)
+			)
 		)
 	end
+
+	for _, plan in ipairs(previewPlans) do
+		local accountStatus
+
+		if plan.Skipped then
+			accountStatus = "SKIPPED: " .. tostring(plan.Reason)
+		elseif plan.Mode == "Fruit" then
+			accountStatus = string.format(
+				"%d/%d fruit | %d mail%s | Base %s | %s",
+				#plan.Fruits,
+				plan.TargetCount or 0,
+				#plan.Batches,
+				#plan.Batches == 1 and "" or "s",
+				formatShortNumber(plan.Total or 0),
+				tostring(plan.Reason)
+			)
+		else
+			accountStatus = string.format(
+				"%d fruit | %d mail%s | %s/%s base | %s",
+				#plan.Fruits,
+				#plan.Batches,
+				#plan.Batches == 1 and "" or "s",
+				formatShortNumber(plan.Total or 0),
+				formatShortNumber(plan.Target or 0),
+				tostring(plan.Reason)
+			)
+		end
+
+		table.insert(previewLines, tostring(plan.Username) .. ": " .. accountStatus)
+	end
+
+	previewLabel.Text = table.concat(previewLines, "\n")
 
 	previewLabel.TextColor3 = waitingUsers > 0 and Color3.fromRGB(255, 220, 120) or Color3.fromRGB(170, 220, 255)
 	return previewPlans
@@ -5463,17 +5521,35 @@ _G.TEBHubCloudSections.Mailer = {
 
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
-	targetModeButton.Text = fruitMode and "Mode: Fruit" or "Mode: Value"
-	targetModeButton.BackgroundColor3 = fruitMode and Color3.fromRGB(75, 95, 55) or Color3.fromRGB(55, 62, 78)
-	fruitNameBox.Visible = fruitMode
-	fruitCountBox.Visible = fruitMode
-	targetBox.Visible = not fruitMode
-	targetFormattedLabel.Visible = not fruitMode
-	targetLabel.Text = fruitMode and "Target:" or "Target:"
+
+	valueModeButton.Text = fruitMode and "☐ Value" or "☑ Value"
+	fruitModeButton.Text = fruitMode and "☑ Fruits" or "☐ Fruits"
+
+	valueModeButton.BackgroundColor3 = not fruitMode and Color3.fromRGB(45, 115, 65) or Color3.fromRGB(55, 62, 78)
+	fruitModeButton.BackgroundColor3 = fruitMode and Color3.fromRGB(45, 115, 65) or Color3.fromRGB(55, 62, 78)
+
+	-- Keep both target sections visible. The checkbox decides which one is used.
+	targetBox.Visible = true
+	targetFormattedLabel.Visible = true
+	fruitTargetLabel.Visible = true
+	fruitNameBox.Visible = true
+	fruitCountBox.Visible = true
+
+	targetBox.TextTransparency = fruitMode and 0.45 or 0
+	targetFormattedLabel.TextTransparency = fruitMode and 0.45 or 0
+	fruitNameBox.TextTransparency = fruitMode and 0 or 0.45
+	fruitCountBox.TextTransparency = fruitMode and 0 or 0.45
 end
 
-targetModeButton.MouseButton1Click:Connect(function()
-	targetMode = targetMode == "Value" and "Fruit" or "Value"
+valueModeButton.MouseButton1Click:Connect(function()
+	targetMode = "Value"
+	updateTargetModeUI()
+	queueMailerCloudSave()
+	makePreview()
+end)
+
+fruitModeButton.MouseButton1Click:Connect(function()
+	targetMode = "Fruit"
 	updateTargetModeUI()
 	queueMailerCloudSave()
 	makePreview()
