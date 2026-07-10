@@ -2730,6 +2730,30 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = playerGui
 
+local sideToggle = Instance.new("TextButton")
+sideToggle.Name = "TEBHubToggle"
+sideToggle.Size = UDim2.fromOffset(96, 34)
+sideToggle.Position = UDim2.new(0, 8, 0.5, -17)
+sideToggle.BackgroundColor3 = Color3.fromRGB(62, 52, 135)
+sideToggle.BorderSizePixel = 0
+sideToggle.Text = "TEB Hub"
+sideToggle.Font = Enum.Font.GothamBold
+sideToggle.TextSize = 12
+sideToggle.TextColor3 = Color3.new(1, 1, 1)
+sideToggle.AutoButtonColor = true
+sideToggle.ZIndex = 100
+sideToggle.Parent = gui
+
+local sideToggleCorner = Instance.new("UICorner")
+sideToggleCorner.CornerRadius = UDim.new(0, 9)
+sideToggleCorner.Parent = sideToggle
+
+local sideToggleStroke = Instance.new("UIStroke")
+sideToggleStroke.Color = Color3.fromRGB(135, 115, 255)
+sideToggleStroke.Thickness = 1
+sideToggleStroke.Transparency = 0.2
+sideToggleStroke.Parent = sideToggle
+
 local main = Instance.new("Frame")
 main.Name = "Main"
 main.Size = UDim2.fromOffset(430, 470)
@@ -7178,13 +7202,20 @@ do
 	end)
 end
 
-local minimized = false
+local hubVisible = true
+
+local function setHubVisible(visible)
+	hubVisible = visible == true
+	main.Visible = hubVisible
+	sideToggle.Text = "TEB Hub"
+end
+
 minimizeButton.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	sidebar.Visible = not minimized
-	pageArea.Visible = not minimized
-	main.Size = minimized and UDim2.fromOffset(920, 48) or UDim2.fromOffset(920, 620)
-	minimizeButton.Text = minimized and "+" or "−"
+	setHubVisible(false)
+end)
+
+sideToggle.MouseButton1Click:Connect(function()
+	setHubVisible(not hubVisible)
 end)
 
 closeButton.MouseButton1Click:Connect(function()
@@ -7209,4 +7240,4 @@ task.defer(function()
 	end
 end)
 
-setStatus("TEB Hub ready. Cloud source: " .. tostring(loadedHubSource) .. ".")
+setStatus("TEB Hub ready. Use the side TEB Hub button to show or hide the window.")
