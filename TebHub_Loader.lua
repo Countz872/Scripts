@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.4"
+local TEB_HUB_VERSION = "1.2.5"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -459,48 +459,66 @@ _G.TEBHubCloudSections.Bloom = {
 }
 
 local function loadCloudSettings()
-	if not CLOUD_CONFIG.AutoLoad or not cloudIsConfigured() then
-		return false, "Cloud auto-load disabled or not configured."
+	if not CLOUD_CONFIG.AutoLoad then
+		return false, "Cloud auto-load disabled."
 	end
 
-	local success, result = cloudCall("load")
-	if not success then
-		cloudLastError = result
-		return false, result
+	if type(_G.TEBCloudLoadScope) == "function" then
+		local data, source, loadError = _G.TEBCloudLoadScope("bloom")
+
+		if type(data) == "table" then
+			applyCloudSettings(data)
+			cloudLoaded = true
+			cloudLastError = nil
+			return true, "Bloom settings loaded from " .. tostring(source or "cloud") .. "."
+		end
+
+		cloudLoaded = true
+		cloudLastError = loadError
+		return false, loadError or "No Bloom cloud save found."
 	end
 
-	if result.found and type(result.data) == "table" then
-		applyCloudSettings(result.data)
-	end
-
-	cloudLoaded = true
-	cloudLastError = nil
-	return true, result.found and "Cloud settings loaded." or "No cloud save yet; defaults loaded."
+	return false, "Unified Bloom cloud bridge unavailable."
 end
 
 local function saveCloudSettingsNow()
-	if not CLOUD_CONFIG.AutoSave or not cloudIsConfigured() then
-		return false, "Cloud auto-save disabled or not configured."
+	if not CLOUD_CONFIG.AutoSave then
+		return false, "Cloud auto-save disabled."
 	end
 
-	local success, result = cloudCall("save", buildCloudSettings())
+	if type(_G.TEBCloudSaveScope) ~= "function" then
+		return false, "Unified Bloom cloud bridge unavailable."
+	end
+
+	local success, result = _G.TEBCloudSaveScope("bloom", buildCloudSettings())
+
 	if not success then
 		cloudLastError = result
 		return false, result
 	end
 
 	cloudLastError = nil
-	return true, "Cloud settings saved."
+	return true, "Bloom cloud settings saved."
 end
 
 local function queueCloudSave()
-	if not CLOUD_CONFIG.AutoSave or not cloudIsConfigured() then
+	if not CLOUD_CONFIG.AutoSave then
 		return
 	end
 
 	cloudSaveRevision += 1
 	local myRevision = cloudSaveRevision
 	cloudSaveQueued = true
+
+	if type(_G.TEBCloudQueueSaveScope) == "function" then
+		_G.TEBCloudQueueSaveScope("bloom", buildCloudSettings)
+		task.delay(CLOUD_CONFIG.SaveDebounceSeconds, function()
+			if myRevision == cloudSaveRevision then
+				cloudSaveQueued = false
+			end
+		end)
+		return
+	end
 
 	task.delay(CLOUD_CONFIG.SaveDebounceSeconds, function()
 		if myRevision ~= cloudSaveRevision then
