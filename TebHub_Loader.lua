@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.9"
+local TEB_HUB_VERSION = "1.4.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -4234,6 +4234,8 @@ loadRecipientsFromBox = function()
 	for _, recipient in ipairs(recipients) do
 		local username = recipient.Username
 		debugTrace("Preparing username: " .. tostring(username))
+
+		local cardBuildOk, cardBuildError = xpcall(function()
 		local mapKey = username:lower()
 
 		local existingData = loadedRecipientMap[mapKey]
@@ -4319,7 +4321,17 @@ loadRecipientsFromBox = function()
 		amountBox.Position = UDim2.new(1, -61, 0, 4)
 		amountBox.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
 		amountBox.BorderSizePixel = 0
-		amountBox.Text = targetMode == "Fruit" and tostring(getDefaultFruitTargetCount()) or (targetBox.Text ~= "" and targetBox.Text or DEFAULT_TARGET_VALUE)
+		local initialFruitCount = math.floor(
+			tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT
+		)
+
+		if initialFruitCount <= 0 then
+			initialFruitCount = DEFAULT_TARGET_FRUIT_COUNT
+		end
+
+		amountBox.Text = targetMode == "Fruit"
+			and tostring(initialFruitCount)
+			or (targetBox.Text ~= "" and targetBox.Text or DEFAULT_TARGET_VALUE)
 		amountBox.PlaceholderText = targetMode == "Fruit" and "20" or "1B"
 		amountBox.Font = Enum.Font.GothamBold
 		amountBox.TextSize = 9
@@ -4385,7 +4397,15 @@ loadRecipientsFromBox = function()
 		amountBox.FocusLost:Connect(function()
 			if targetMode == "Fruit" then
 				local count = math.floor(tonumber(cleanNumberText(amountBox.Text)) or 0)
-				amountBox.Text = tostring(count > 0 and count or getDefaultFruitTargetCount())
+				local fallbackCount = math.floor(
+					tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT
+				)
+
+				if fallbackCount <= 0 then
+					fallbackCount = DEFAULT_TARGET_FRUIT_COUNT
+				end
+
+				amountBox.Text = tostring(count > 0 and count or fallbackCount)
 			else
 				local value = parseUserNumber(amountBox.Text)
 
@@ -4529,6 +4549,31 @@ loadRecipientsFromBox = function()
 				end
 			end)
 		end)
+
+		end, debug.traceback)
+
+		if not cardBuildOk then
+			debugTrace(
+				"CARD BUILD ERROR | user=" .. tostring(username)
+					.. " | " .. tostring(cardBuildError)
+			)
+			addLog(
+				"Failed to create player card for "
+					.. tostring(username)
+					.. ". Open Debugger.",
+				Color3.fromRGB(255, 120, 120)
+			)
+
+			local failedKey = tostring(username):lower()
+			local failedCard = avatarCardMap[failedKey]
+
+			if failedCard then
+				failedCard:Destroy()
+			end
+
+			avatarCardMap[failedKey] = nil
+			loadedRecipientMap[failedKey] = nil
+		end
 	end
 end
 
