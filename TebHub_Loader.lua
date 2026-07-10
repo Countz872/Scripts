@@ -10,6 +10,13 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+local TEB_HUB_VERSION = "1.1.1"
+
+-- NEVER include the script version in these cloud keys.
+-- Keeping them stable preserves player settings across future releases.
+local TEB_STABLE_USER_KEY = "TEBHubUser-" .. tostring(player.UserId)
+local TEB_LEGACY_BLOOM_KEY = "BloomAutomationUser-" .. tostring(player.UserId)
+
 _G.TEBHubModules = _G.TEBHubModules or {}
 
 local oldHub = playerGui:FindFirstChild("TEBHubUI")
@@ -24,7 +31,7 @@ end
 -- ============================================================
 local HttpService = game:GetService("HttpService")
 local TEB_CLOUD_ENDPOINT = "https://scripts-gag2.tucodanj.workers.dev"
-local TEB_USER_KEY = "TEBHubUser-" .. tostring(player.UserId)
+local TEB_USER_KEY = TEB_STABLE_USER_KEY
 local TEB_CLOUD_DEBOUNCE = 1.25
 local tebSaveRevisions = {}
 
@@ -35,14 +42,14 @@ local function tebRequestFunction()
 		or (http and http.request)
 end
 
-local function tebCloudCall(action, scope, data)
+local function tebCloudCall(action, scope, data, keyOverride)
 	local requestFn = tebRequestFunction()
 	if not requestFn then
 		return false, "request/http_request is unavailable."
 	end
 
 	local body = {
-		key = TEB_USER_KEY,
+		key = keyOverride or TEB_USER_KEY,
 		userId = tostring(player.UserId),
 		scope = tostring(scope or "hub"),
 		data = data,
@@ -91,6 +98,23 @@ local function tebLoadScope(scope)
 	if not ok then
 		return nil, "error", result
 	end
+
+	-- Previous Bloom releases used a different stable user key.
+	-- Check it before accepting the global default, then migrate it forward.
+	if scope == "bloom" and result.source ~= "user" then
+		local legacyOk, legacyResult = tebCloudCall(
+			"load",
+			scope,
+			nil,
+			TEB_LEGACY_BLOOM_KEY
+		)
+
+		if legacyOk and legacyResult.source == "user" and type(legacyResult.data) == "table" then
+			tebCloudCall("save", scope, legacyResult.data)
+			return legacyResult.data, "legacy-user-migrated"
+		end
+	end
+
 	return type(result.data) == "table" and result.data or nil, result.source or "none"
 end
 
@@ -183,6 +207,9 @@ local enabled = false
 local loopRunning = false
 local minimized = false
 
+-- Automation lifetime is independent from whether any UI is visible.
+local automationAlive = true
+
 -- Defaults: Above 58.5 KG ON
 local kgThreshold = 93
 local kgFilterEnabled = true
@@ -252,7 +279,7 @@ end
 local CLOUD_CONFIG = {
 	Enabled = true,
 	Endpoint = "https://scripts-gag2.tucodanj.workers.dev",
-	SyncKey = "BloomAutomationUser-" .. ROBLOX_USER_ID,
+	SyncKey = TEB_STABLE_USER_KEY,
 	AutoLoad = true,
 	AutoSave = true,
 	SaveDebounceSeconds = 1.25
@@ -2110,6 +2137,7 @@ minimizeButton.MouseButton1Click:Connect(function()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
+	automationAlive = false
 	masterEnabled = false
 	enabled = false
 	gui:Destroy()
@@ -2157,7 +2185,7 @@ local function automationLoop()
 
 	loopRunning = true
 
-	while gui.Parent do
+	while automationAlive do
 		updateItemButtons()
 		updateKgButtons()
 		updateRatioButton()
@@ -2316,6 +2344,7 @@ end
 _G.TEBHubModules = _G.TEBHubModules or {}
 _G.TEBHubModules.Bloom = {
 	Stop = function()
+		automationAlive = false
 		masterEnabled = false
 		enabled = false
 		waitingForCollection = false
@@ -2325,7 +2354,7 @@ _G.TEBHubModules.Bloom = {
 		end
 	end,
 	IsRunning = function()
-		return gui ~= nil and gui.Parent ~= nil
+		return automationAlive == true
 	end
 }
 
@@ -5612,7 +5641,8 @@ _G.TEBHubModules.Mailer = {
 		end
 	end,
 	IsRunning = function()
-		return running == true and gui ~= nil and gui.Parent ~= nil
+		-- Runtime state is independent from UI visibility or GUI parenting.
+		return running == true
 	end
 }
 
@@ -6289,7 +6319,7 @@ loadedHubConfig = type(loadedHubConfig) == "table" and loadedHubConfig or {}
 local moduleEnabled = {
 	Bloom = loadedHubConfig.Bloom == true,
 	Mailer = loadedHubConfig.Mailer == true,
-	Optimizer = loadedHubConfig.Optimizer == true,
+	Optimizer = loadedHubConfig.Optimizer ~= false,
 	AutoRejoin = loadedHubConfig.AutoRejoin ~= false,
 }
 
@@ -6303,7 +6333,8 @@ local hubSavedY = tonumber(loadedHubConfig.UiY) or 80
 
 local function buildHubCloudSettings()
 	return {
-		version = 1,
+		schemaVersion = 1,
+		hubVersion = TEB_HUB_VERSION,
 		Bloom = moduleEnabled.Bloom,
 		Mailer = moduleEnabled.Mailer,
 		Optimizer = moduleEnabled.Optimizer,
@@ -6439,8 +6470,23 @@ hubTitle.TextColor3 = Color3.new(1, 1, 1)
 hubTitle.TextXAlignment = Enum.TextXAlignment.Left
 hubTitle.Parent = topBar
 
+local versionLabel = Instance.new("TextLabel")
+versionLabel.Size = UDim2.fromOffset(90, 20)
+versionLabel.Position = UDim2.new(1, -176, 0, 14)
+versionLabel.BackgroundColor3 = Color3.fromRGB(45, 47, 66)
+versionLabel.BorderSizePixel = 0
+versionLabel.Text = "v" .. TEB_HUB_VERSION
+versionLabel.Font = Enum.Font.Code
+versionLabel.TextSize = 10
+versionLabel.TextColor3 = Color3.fromRGB(205, 215, 255)
+versionLabel.Parent = topBar
+
+local versionCorner = Instance.new("UICorner")
+versionCorner.CornerRadius = UDim.new(0, 6)
+versionCorner.Parent = versionLabel
+
 local hubSubtitle = Instance.new("TextLabel")
-hubSubtitle.Size = UDim2.fromOffset(310, 20)
+hubSubtitle.Size = UDim2.fromOffset(280, 20)
 hubSubtitle.Position = UDim2.fromOffset(112, 14)
 hubSubtitle.BackgroundTransparency = 1
 hubSubtitle.Text = "Unified automation control center"
@@ -7003,10 +7049,10 @@ local function mountModuleUI(moduleName)
 
 		normalizeMountedFrame(moduleName, frame)
 
-		-- Keep the original ScreenGui alive even after its visible frame is moved.
-		-- Bloom's automation loop uses `while gui.Parent do`, so destroying this
-		-- ScreenGui would silently stop the automation immediately.
-		moduleGui.Enabled = false
+		-- Keep the backing ScreenGui alive and enabled after moving its visible
+		-- frame into TEB Hub. Module runtimes are controlled only by their own
+		-- runtime flags, never by hub visibility or mounted UI visibility.
+		moduleGui.Enabled = true
 
 		setStatus(moduleName .. " controls mounted inside TEB Hub.")
 	end)
@@ -7210,6 +7256,9 @@ end
 local hubVisible = true
 
 local function setHubVisible(visible)
+	-- Presentation only:
+	-- Bloom, Mailer, Optimizer, and Auto Rejoin continue running unchanged.
+	-- Never call setModule(), stopModule(), Destroy(), or modify runtime flags here.
 	hubVisible = visible == true
 	main.Visible = hubVisible
 	sideToggle.Text = "TEB Hub"
@@ -7224,6 +7273,8 @@ sideToggle.MouseButton1Click:Connect(function()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
+	-- The red X is the only hub control that intentionally stops all modules.
+	-- The minimize button and side toggle only hide/show the interface.
 	hubRunning = false
 	rejoining = false
 	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
@@ -7245,4 +7296,4 @@ task.defer(function()
 	end
 end)
 
-setStatus("TEB Hub ready. Use the side TEB Hub button to show or hide the window.")
+setStatus("TEB Hub v" .. TEB_HUB_VERSION .. " ready. All modules continue while the UI is hidden.")

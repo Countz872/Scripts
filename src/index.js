@@ -26,11 +26,9 @@ async function sha256(value) {
 }
 
 function validateScope(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  return ALLOWED_SCOPES.has(value) ? value : null;
+  return typeof value === "string" && ALLOWED_SCOPES.has(value)
+    ? value
+    : null;
 }
 
 function validateData(value) {
@@ -148,6 +146,33 @@ export default {
           });
         }
 
+        // Migration support for the first Bloom config Worker.
+        // Older versions stored Bloom settings as:
+        // config:<hash>
+        if (scope === "bloom") {
+          const legacyStorageKey =
+            `config:${hashedKey}`;
+
+          const legacyConfig = await env.CONFIGS.get(
+            legacyStorageKey,
+            "json",
+          );
+
+          if (legacyConfig) {
+            await env.CONFIGS.put(
+              userStorageKey,
+              JSON.stringify(legacyConfig),
+            );
+
+            return json({
+              ok: true,
+              found: true,
+              source: "legacy-user-migrated",
+              data: legacyConfig,
+            });
+          }
+        }
+
         const defaultConfig = await env.CONFIGS.get(
           defaultStorageKey,
           "json",
@@ -187,6 +212,8 @@ export default {
         });
       }
 
+      // Global default config.
+      // Existing UserId settings still take priority.
       await env.CONFIGS.put(
         defaultStorageKey,
         JSON.stringify(cleanData),
