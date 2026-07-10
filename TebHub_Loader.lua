@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.8"
+local TEB_HUB_VERSION = "1.3.9"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -5414,6 +5414,81 @@ function mailerRuntime.VerifyBatchLeftInventory(batch, timeoutSeconds, username)
 	return #remaining == 0, removed, remaining
 end
 
+--// REFRESH / PREVIEW
+
+updateTargetFormattedLabel = function()
+	local targetValue = parseUserNumber(targetBox.Text)
+
+	if targetValue and targetValue > 0 then
+		targetFormattedLabel.Text = formatShortNumber(targetValue) .. " (" .. formatNumber(targetValue) .. ")"
+		targetFormattedLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+	else
+		local fallback = parseUserNumber(DEFAULT_TARGET_VALUE) or 1000000000
+		targetFormattedLabel.Text = "default " .. formatShortNumber(fallback)
+		targetFormattedLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+	end
+end
+
+refreshUI = function()
+	if not running then
+		return
+	end
+
+	local fruits = getCachedFruitsArray(false, false)
+	local mailable = getCachedFruitsArray(true, true)
+
+	local totalCurrent = 0
+	local totalBase = 0
+	local fallbackCount = 0
+
+	for _, fruit in ipairs(fruits) do
+		totalCurrent += fruit.currentValue
+		totalBase += fruit.baseValue
+
+		if fruit.multiSource == "fallback" then
+			fallbackCount += 1
+		end
+	end
+
+	statsLabel.Text = string.format(
+		"Fruits: %d | Mailable unsent: %d | Base: %s | Current: %s | Stock: %d | Fallback: %d",
+		#fruits,
+		#mailable,
+		formatShortNumber(totalBase),
+		formatShortNumber(totalCurrent),
+		lastStockCardCount,
+		fallbackCount
+	)
+end
+
+local function getRecipientsForPlanning()
+	local result = {}
+	local seen = {}
+
+	-- Loaded avatar cards are the main source, because each one has its own amount box.
+	for _, recipient in ipairs(loadedRecipients) do
+		local key = recipient.Username:lower()
+
+		if not seen[key] then
+			seen[key] = true
+			table.insert(result, recipient)
+		end
+	end
+
+	-- If someone typed usernames but did not click Load yet, include them with the default target.
+	-- They will not have avatar cards until Load is clicked.
+	for _, recipient in ipairs(parseRecipientQueries(recipientBox.Text)) do
+		local key = recipient.Username:lower()
+
+		if not seen[key] then
+			seen[key] = true
+			table.insert(result, recipient)
+		end
+	end
+
+	return result
+end
+
 local function getDefaultTargetValue()
 	local value = parseUserNumber(targetBox.Text)
 
@@ -6589,6 +6664,11 @@ task.defer(function()
 
 	updateTargetFormattedLabel()
 	refreshUI()
+task.defer(function()
+	if running then
+		rescanInventoryNow()
+	end
+end)
 
 	addLog("Loaded mailer with rolling " .. tostring(mailLimitCount) .. "-mail / " .. tostring(mailLimitWindowHours) .. "h tracker.", Color3.fromRGB(170, 255, 170))
 debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
