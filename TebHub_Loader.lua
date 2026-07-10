@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.1.1"
+local TEB_HUB_VERSION = "1.1.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -6313,23 +6313,25 @@ _G.TEBHubModules.Optimizer = {
 ]=],
 }
 
-local loadedHubConfig, loadedHubSource = tebLoadScope("hub")
-loadedHubConfig = type(loadedHubConfig) == "table" and loadedHubConfig or {}
+-- Startup must never wait for Cloudflare.
+-- These hardcoded defaults are applied immediately on every launch.
+local loadedHubConfig = {}
+local loadedHubSource = "local-startup"
 
 local moduleEnabled = {
-	Bloom = loadedHubConfig.Bloom == true,
-	Mailer = loadedHubConfig.Mailer == true,
-	Optimizer = loadedHubConfig.Optimizer ~= false,
-	AutoRejoin = loadedHubConfig.AutoRejoin ~= false,
+	Bloom = false,
+	Mailer = false,
+	Optimizer = true,
+	AutoRejoin = true,
 }
 
 local moduleBusy = {}
-local rejoinDelay = math.clamp(math.floor(tonumber(loadedHubConfig.RejoinDelay) or 150), 0, 3600)
+local rejoinDelay = 150
 local rejoining = false
 local hubRunning = true
-local hubMinimized = loadedHubConfig.Minimized == true
-local hubSavedX = tonumber(loadedHubConfig.UiX) or 8
-local hubSavedY = tonumber(loadedHubConfig.UiY) or 80
+local hubMinimized = false
+local hubSavedX = 8
+local hubSavedY = 80
 
 local function buildHubCloudSettings()
 	return {
@@ -7296,4 +7298,47 @@ task.defer(function()
 	end
 end)
 
-setStatus("TEB Hub v" .. TEB_HUB_VERSION .. " ready. All modules continue while the UI is hidden.")
+setStatus("TEB Hub v" .. TEB_HUB_VERSION .. " ready. Auto Rejoin and Optimizer started from hardcoded defaults.")
+
+-- Load cloud settings in the background only after the hub is already usable.
+-- Optimizer and Auto Rejoin intentionally remain ON regardless of cloud values.
+task.spawn(function()
+	local cloudConfig, cloudSource, cloudError = tebLoadScope("hub")
+
+	if not hubRunning then
+		return
+	end
+
+	if type(cloudConfig) ~= "table" then
+		cloudSourceLabel.Text = "Loaded source: local defaults"
+		if cloudError then
+			setStatus("Cloud config unavailable; using hardcoded defaults.")
+		end
+		return
+	end
+
+	loadedHubConfig = cloudConfig
+	loadedHubSource = cloudSource or "cloud"
+	cloudSourceLabel.Text = "Loaded source: " .. tostring(loadedHubSource)
+
+	-- These optional settings may be restored after startup without blocking it.
+	local savedDelay = tonumber(cloudConfig.RejoinDelay)
+	if savedDelay then
+		rejoinDelay = math.clamp(math.floor(savedDelay), 0, 3600)
+		delayBox.Text = tostring(rejoinDelay)
+	end
+
+	-- Restore Bloom and Mailer preferences asynchronously.
+	for _, name in ipairs({"Bloom", "Mailer"}) do
+		local wanted = cloudConfig[name] == true
+		if wanted ~= moduleEnabled[name] then
+			setModule(name, wanted)
+		end
+	end
+
+	-- Hardcoded startup requirements: never let cloud turn these off.
+	moduleEnabled.Optimizer = true
+	moduleEnabled.AutoRejoin = true
+	refreshModuleVisuals()
+	setStatus("Cloud config loaded in background. Optimizer and Auto Rejoin remain ON.")
+end)
