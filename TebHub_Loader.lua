@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.2.1"
+local TEB_HUB_VERSION = "1.2.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2589,6 +2589,10 @@ local userIdCache = {}
 local loadedRecipients = {}
 local loadedRecipientMap = {}
 local avatarCardMap = {}
+
+-- Invalidates old asynchronous lookup tasks whenever cards are cleared/reloaded.
+local recipientLoadGeneration = 0
+local recipientLookupSerial = 0
 local historyEntries = {}
 local logEntries = {}
 local progressRows = {}
@@ -3973,26 +3977,41 @@ local function parseUsernames(text)
 end
 
 local function getUserIdFromUsername(username)
-	username = tostring(username or "")
+	username = tostring(username or ""):gsub("^%s+", ""):gsub("%s+$", "")
 
 	if username == "" then
 		error("Recipient username is empty.")
 	end
 
-	if userIdCache[username] then
-		return userIdCache[username]
+	local cacheKey = username:lower()
+	local cached = tonumber(userIdCache[cacheKey] or userIdCache[username])
+
+	if cached then
+		userIdCache[cacheKey] = cached
+		return cached
 	end
 
-	local ok, result = pcall(function()
-		return Players:GetUserIdFromNameAsync(username)
-	end)
+	local lastError
 
-	if not ok then
-		error("Could not resolve " .. username .. ": " .. tostring(result))
+	for attempt = 1, 3 do
+		local ok, result = pcall(function()
+			return Players:GetUserIdFromNameAsync(username)
+		end)
+
+		result = tonumber(result)
+
+		if ok and result then
+			userIdCache[cacheKey] = result
+			return result
+		end
+
+		lastError = result
+		if attempt < 3 then
+			task.wait(0.75 * attempt)
+		end
 	end
 
-	userIdCache[username] = result
-	return result
+	error("Could not resolve " .. username .. ": " .. tostring(lastError))
 end
 
 local function userIdToMailBytes(userId)
@@ -4021,12 +4040,35 @@ loadRecipientsFromBox = function()
 		local username = recipient.Username
 		local mapKey = username:lower()
 
-		if avatarCardMap[mapKey] then
-			addLog(username .. " is already loaded. Edit the amount on the avatar card.")
+		local existingData = loadedRecipientMap[mapKey]
+		local existingCard = avatarCardMap[mapKey]
+
+		if existingData and existingData.UserId then
+			addLog(username .. " is already loaded. Edit the target on the avatar card.")
 			continue
 		end
 
+		-- Remove stale, failed, or timed-out cards before a fresh retry.
+		if existingCard then
+			existingCard:Destroy()
+			avatarCardMap[mapKey] = nil
+		end
+
+		if existingData then
+			for i = #loadedRecipients, 1, -1 do
+				if loadedRecipients[i] == existingData then
+					table.remove(loadedRecipients, i)
+					break
+				end
+			end
+			loadedRecipientMap[mapKey] = nil
+		end
+
 		local index = #loadedRecipients + 1
+		recipientLookupSerial += 1
+
+		local thisLookupSerial = recipientLookupSerial
+		local thisGeneration = recipientLoadGeneration
 
 		local card = Instance.new("Frame")
 		card.Name = "AvatarCard"
@@ -4104,6 +4146,9 @@ loadRecipientsFromBox = function()
 			UserId = nil,
 			TargetInput = amountBox,
 			TargetLabel = amountLabel,
+			LoadSerial = thisLookupSerial,
+			LoadGeneration = thisGeneration,
+			LoadState = "Loading",
 		}
 
 		loadedRecipientMap[mapKey] = recipientData
@@ -4156,16 +4201,28 @@ loadRecipientsFromBox = function()
 		task.spawn(function()
 			local finished = false
 
-			task.delay(12, function()
-				if finished or not card.Parent then
+			local function isCurrentLoad()
+				return not finished
+					and card.Parent ~= nil
+					and recipientData.LoadSerial == thisLookupSerial
+					and recipientData.LoadGeneration == recipientLoadGeneration
+					and thisGeneration == recipientLoadGeneration
+					and loadedRecipientMap[mapKey] == recipientData
+					and avatarCardMap[mapKey] == card
+			end
+
+			-- Watchdog only updates this exact card. It cannot touch a later reload.
+			task.delay(25, function()
+				if not isCurrentLoad() then
 					return
 				end
 
 				finished = true
+				recipientData.LoadState = "TimedOut"
 				nameLabel.Text = username .. "\nlookup timed out"
 				nameLabel.TextColor3 = Color3.fromRGB(255, 190, 100)
 				addLog(
-					"Timed out loading " .. username .. ". Check the username and try again.",
+					"Timed out loading " .. username .. ". Press Load Players to retry.",
 					Color3.fromRGB(255, 190, 100)
 				)
 			end)
@@ -4174,14 +4231,20 @@ loadRecipientsFromBox = function()
 				return getUserIdFromUsername(username)
 			end)
 
-			if finished or not card.Parent then
+			if not isCurrentLoad() then
 				return
 			end
 
-			if not userOk or not tonumber(userIdOrError) then
+			local resolvedUserId = tonumber(userIdOrError)
+
+			if not userOk or not resolvedUserId then
 				finished = true
-				nameLabel.Text = username .. "\nnot found"
+				recipientData.LoadState = "Failed"
+				nameLabel.Text = username .. "\nload failed"
 				nameLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+
+				-- Keep the card visible so the user can see the failure, but remove
+				-- it from active recipients and allow a clean retry.
 				loadedRecipientMap[mapKey] = nil
 				avatarCardMap[mapKey] = nil
 
@@ -4192,38 +4255,43 @@ loadRecipientsFromBox = function()
 					end
 				end
 
-				card:Destroy()
 				addLog(
-					"Failed to load " .. username .. ": " .. tostring(userIdOrError),
+					"Failed to load " .. username .. ": " .. tostring(userIdOrError)
+						.. ". Press Load Players to retry.",
 					Color3.fromRGB(255, 120, 120)
 				)
 				return
 			end
 
-			local resolvedUserId = tonumber(userIdOrError)
 			recipientData.UserId = resolvedUserId
+			recipientData.LoadState = "Loaded"
+			finished = true
+
 			nameLabel.Text = username .. "\n" .. tostring(resolvedUserId)
 			nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
 
-			-- Mark the recipient loaded before requesting the avatar.
-			-- Avatar delivery can fail or be slow without blocking mailing.
-			finished = true
 			addLog(
 				"Loaded " .. username .. ". Set the target on the avatar card.",
 				Color3.fromRGB(170, 255, 170)
 			)
 
+			-- Avatar fetching is cosmetic and fully detached from recipient loading.
 			task.spawn(function()
 				local thumbnailOk, thumbnailOrError = pcall(function()
-					local thumbnail = Players:GetUserThumbnailAsync(
+					return Players:GetUserThumbnailAsync(
 						resolvedUserId,
 						Enum.ThumbnailType.AvatarBust,
 						Enum.ThumbnailSize.Size100x100
 					)
-					return thumbnail
 				end)
 
-				if thumbnailOk and type(thumbnailOrError) == "string" and img.Parent then
+				if thumbnailOk
+					and type(thumbnailOrError) == "string"
+					and card.Parent
+					and recipientData.LoadSerial == thisLookupSerial
+					and recipientData.LoadGeneration == recipientLoadGeneration
+					and loadedRecipientMap[mapKey] == recipientData
+				then
 					img.Image = thumbnailOrError
 				end
 			end)
@@ -5836,6 +5904,7 @@ targetBox.FocusLost:Connect(function()
 end)
 
 clearQueryButton.MouseButton1Click:Connect(function()
+	recipientLoadGeneration += 1
 	recipientBox.Text = ""
 
 	for _, child in ipairs(avatarFrame:GetChildren()) do
