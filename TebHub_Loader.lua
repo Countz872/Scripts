@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.3.2"
+local TEB_HUB_VERSION = "1.3.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7168,6 +7168,13 @@ local moduleEnabled = {
 	AutoRejoin = true,
 }
 
+-- Must exist before executeModule so it captures this local table.
+local moduleGuiNames = {
+	Bloom = "BloomAutomationUI",
+	Mailer = "CompactFruitMultiMailer",
+	Optimizer = "PlantFruitCounterUI",
+}
+
 local moduleBusy = {}
 local rejoinDelay = 150
 local rejoining = false
@@ -7956,12 +7963,6 @@ cloudSourceLabel.TextColor3 = Color3.fromRGB(155, 205, 255)
 cloudSourceLabel.TextXAlignment = Enum.TextXAlignment.Left
 cloudSourceLabel.Parent = cloudPanel
 
-local moduleGuiNames = {
-	Bloom = "BloomAutomationUI",
-	Mailer = "CompactFruitMultiMailer",
-	Optimizer = "PlantFruitCounterUI",
-}
-
 local function clearHost(moduleName)
 	local host = moduleHosts[moduleName]
 	if not host then
@@ -8075,8 +8076,19 @@ local function mountModuleUI(moduleName)
 	normalizeMountedFrame(moduleName, frame)
 
 	-- The frame is now under the unified host and must remain visible.
+	host.Visible = true
 	frame.Visible = true
+	frame.Active = true
+	frame.ZIndex = 2
 	moduleGui.Enabled = false
+
+	task.defer(function()
+		if frame.Parent == host then
+			frame.Visible = true
+			frame.Position = UDim2.fromOffset(0, 0)
+			frame.Size = UDim2.fromScale(1, 1)
+		end
+	end)
 
 	setStatus(moduleName .. " controls mounted inside TEB Hub.")
 	return true
@@ -8109,6 +8121,8 @@ local function setModule(name, wanted)
 			oldStandaloneGui:Destroy()
 		end
 
+		setStatus("Starting " .. name .. "...")
+
 		local ok, err = executeModule(name)
 
 		if not ok then
@@ -8126,6 +8140,7 @@ local function setModule(name, wanted)
 			else
 				moduleEnabled[name] = true
 				setStatus(name .. " enabled inside TEB Hub.")
+				showPage(name)
 			end
 		end
 	else
