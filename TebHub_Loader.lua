@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.9"
+local TEB_HUB_VERSION = "1.6.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -268,6 +268,15 @@ local displayedRatioGoodFruitCount = 0
 local displayedRatioPlantCount = 0
 local displayedRatioValue = 0
 local displayedPlantGatePassed = false
+
+-- Prevent temporary replication dips from causing false ratio stops.
+local highestOwnedPlotPlantCount = 0
+local highestOwnedPlotPlantPlot = nil
+local RATIO_CONFIRM_SECONDS = 4
+local ratioCandidateGoodCount = nil
+local ratioCandidatePlantCount = nil
+local ratioCandidateSince = 0
+local ratioAutoStoppedByThreshold = false
 
 -- ============================================================
 -- CLOUD CONFIG (Cloudflare Worker + KV)
@@ -1218,15 +1227,26 @@ local function getOwnedPlotPlantsFolder()
 end
 
 local function getOwnedPlotPlantCount()
-	local plantsFolder = getOwnedPlotPlantsFolder()
+	local plantsFolder, ownedPlot = getOwnedPlotPlantsFolder()
 
-	if not plantsFolder then
-		return 0
+	if not plantsFolder or not ownedPlot then
+		return highestOwnedPlotPlantCount
 	end
 
-	-- Exact requested count:
-	-- Workspace > Gardens > owned Plot[number] > Plants > direct children.
-	return #plantsFolder:GetChildren()
+	if highestOwnedPlotPlantPlot ~= ownedPlot then
+		highestOwnedPlotPlantPlot = ownedPlot
+		highestOwnedPlotPlantCount = 0
+	end
+
+	local directChildCount = #plantsFolder:GetChildren()
+
+	-- Plants can briefly disappear/reparent while the game updates them.
+	-- Never let that temporary dip shrink the ratio denominator.
+	if directChildCount > highestOwnedPlotPlantCount then
+		highestOwnedPlotPlantCount = directChildCount
+	end
+
+	return highestOwnedPlotPlantCount
 end
 
 local function getFruitPlantRatio()
@@ -1984,7 +2004,14 @@ local function updateRatioDisplay()
 
 	displayedRatioGoodFruitCount = goodFruitCount
 	displayedRatioPlantCount = plantCount
-	displayedRatioValue = ratio
+
+	if displayedRatioPlantCount > 0 then
+		displayedRatioValue =
+			displayedRatioGoodFruitCount / displayedRatioPlantCount
+	else
+		displayedRatioValue = 0
+	end
+
 	displayedPlantGatePassed = scriptFullyLoaded
 
 	ratioText.Text = string.format(
@@ -2015,9 +2042,18 @@ local function applyRatioAutoControl()
 
 	local goodFruitCount = displayedRatioGoodFruitCount
 	local plantCount = displayedRatioPlantCount
-	local ratio = displayedRatioValue
+	local ratio = 0
 
-	if goodFruitCount ~= lastRatioGoodFruitCount or plantCount ~= lastRatioPlantCount then
+	-- Calculate from the exact numerator and denominator shown in the UI.
+	if plantCount > 0 then
+		ratio = goodFruitCount / plantCount
+	end
+
+	displayedRatioValue = ratio
+
+	if goodFruitCount ~= lastRatioGoodFruitCount
+		or plantCount ~= lastRatioPlantCount
+	then
 		if not waitingForCollection then
 			wateredForCurrentCondition = false
 		end
@@ -2026,28 +2062,65 @@ local function applyRatioAutoControl()
 	lastRatioGoodFruitCount = goodFruitCount
 	lastRatioPlantCount = plantCount
 
+	-- The exact same counts must remain unchanged before a ratio decision.
+	if ratioCandidateGoodCount ~= goodFruitCount
+		or ratioCandidatePlantCount ~= plantCount
+	then
+		ratioCandidateGoodCount = goodFruitCount
+		ratioCandidatePlantCount = plantCount
+		ratioCandidateSince = os.clock()
+		return
+	end
+
+	if os.clock() - ratioCandidateSince < RATIO_CONFIRM_SECONDS then
+		return
+	end
+
 	if not enabled and ratio < startBelowRatio then
 		enabled = true
+		ratioAutoStoppedByThreshold = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 
 		setStatus(
 			string.format(
-				"Good fruit ratio %.2f%% below %.2f%%. Auto-started.",
+				"Ratio %d / %d = %.2f%% below %.2f%% for %.0fs. Auto-started.",
+				goodFruitCount,
+				plantCount,
 				ratio * 100,
-				startBelowRatio * 100
+				startBelowRatio * 100,
+				RATIO_CONFIRM_SECONDS
 			)
 		)
 	elseif enabled and ratio > stopAboveRatio then
 		enabled = false
+		ratioAutoStoppedByThreshold = true
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 
 		setStatus(
 			string.format(
-				"Good fruit ratio %.2f%% above %.2f%%. Auto-stopped.",
+				"Ratio %d / %d = %.2f%% above %.2f%% for %.0fs. Auto-stopped.",
+				goodFruitCount,
+				plantCount,
 				ratio * 100,
-				stopAboveRatio * 100
+				stopAboveRatio * 100,
+				RATIO_CONFIRM_SECONDS
+			)
+		)
+	elseif ratioAutoStoppedByThreshold
+		and not enabled
+		and ratio <= stopAboveRatio
+	then
+		-- Replace a stale stop message with the exact current displayed ratio.
+		setStatus(
+			string.format(
+				"Current ratio %d / %d = %.2f%%. Below stop %.2f%%; waiting below start %.2f%% to restart.",
+				goodFruitCount,
+				plantCount,
+				ratio * 100,
+				stopAboveRatio * 100,
+				startBelowRatio * 100
 			)
 		)
 	end
@@ -2099,6 +2172,10 @@ end)
 
 ratioToggleButton.MouseButton1Click:Connect(function()
 	ratioControlEnabled = not ratioControlEnabled
+	ratioCandidateGoodCount = nil
+	ratioCandidatePlantCount = nil
+	ratioCandidateSince = 0
+	ratioAutoStoppedByThreshold = false
 	wateredForCurrentCondition = false
 	waitingForCollection = false
 	updateRatioButton()
@@ -2120,6 +2197,9 @@ startRatioBox.FocusLost:Connect(function()
 		end
 
 		startBelowRatio = value
+		ratioCandidateGoodCount = nil
+		ratioCandidatePlantCount = nil
+		ratioCandidateSince = 0
 		queueCloudSave()
 		startRatioBox.Text = tostring(startBelowRatio)
 		wateredForCurrentCondition = false
@@ -2141,6 +2221,9 @@ stopRatioBox.FocusLost:Connect(function()
 		end
 
 		stopAboveRatio = value
+		ratioCandidateGoodCount = nil
+		ratioCandidatePlantCount = nil
+		ratioCandidateSince = 0
 		queueCloudSave()
 		stopRatioBox.Text = tostring(stopAboveRatio)
 		wateredForCurrentCondition = false
