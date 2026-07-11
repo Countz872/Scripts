@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.7"
+local TEB_HUB_VERSION = "1.4.9"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -648,44 +648,208 @@ local function findMoonBloomPlants()
 	return plants
 end
 
-local function getOwnedPlotPlantsFolderCount()
+local function getPlantContainerCount(container)
+	if not container then
+		return 0
+	end
+
+	local current = container
+	local count = #current:GetChildren()
+	local unwrapDepth = 0
+
+	-- Some plots use:
+	-- Plot > Plants > wrapper folder > 1200 plant instances.
+	-- Unwrap folder-only layers, but never enter a Model because that may be
+	-- an individual plant containing many visual parts.
+	while count == 1 and unwrapDepth < 8 do
+		local onlyChild = current:GetChildren()[1]
+
+		if not onlyChild or not onlyChild:IsA("Folder") then
+			break
+		end
+
+		current = onlyChild
+		count = #current:GetChildren()
+		unwrapDepth += 1
+	end
+
+	return count
+end
+
+local function getPlotOwnerValues(plot)
+	local ownerName =
+		plot:GetAttribute("Owner")
+		or plot:GetAttribute("owner")
+		or plot:GetAttribute("OwnerName")
+		or plot:GetAttribute("ownername")
+
+	local ownerUserId =
+		tonumber(plot:GetAttribute("owneruserid"))
+		or tonumber(plot:GetAttribute("OwnerUserId"))
+		or tonumber(plot:GetAttribute("OwnerUserID"))
+		or tonumber(plot:GetAttribute("UserId"))
+		or tonumber(plot:GetAttribute("userId"))
+
+	local ownerObject =
+		plot:FindFirstChild("Owner")
+		or plot:FindFirstChild("owner")
+
+	if ownerObject and ownerObject:IsA("ValueBase") then
+		local value = ownerObject.Value
+
+		if typeof(value) == "Instance" and value:IsA("Player") then
+			ownerName = ownerName or value.Name
+			ownerUserId = ownerUserId or value.UserId
+		elseif type(value) == "string" then
+			ownerName = ownerName or value
+		elseif type(value) == "number" then
+			ownerUserId = ownerUserId or value
+		end
+	end
+
+	return ownerName, ownerUserId
+end
+
+local function isOwnedPlot(plot)
+	local ownerName, ownerUserId = getPlotOwnerValues(plot)
+
+	if ownerUserId and ownerUserId == player.UserId then
+		return true
+	end
+
+	if type(ownerName) == "string"
+		and ownerName:lower() == player.Name:lower()
+	then
+		return true
+	end
+
+	return false
+end
+
+local function hasPlantIdentityAttribute(instance)
+	return instance:GetAttribute("Plant") ~= nil
+		or instance:GetAttribute("plant") ~= nil
+		or instance:GetAttribute("PlantName") ~= nil
+		or instance:GetAttribute("plantName") ~= nil
+		or instance:GetAttribute("plantname") ~= nil
+end
+
+local function getAttributePlantCount(root)
+	if not root then
+		return 0
+	end
+
+	local counted = {}
+	local count = 0
+
+	local function inspect(instance)
+		if hasPlantIdentityAttribute(instance) and not counted[instance] then
+			counted[instance] = true
+			count += 1
+		end
+	end
+
+	inspect(root)
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		inspect(descendant)
+	end
+
+	return count
+end
+
+local function getOwnedPlotAttributePlantCount()
+	local largestCount = 0
+	local foundOwnedPlot = false
+
 	for _, gardens in ipairs(workspace:GetDescendants()) do
-		if gardens.Name == "Gardens"
+		if gardens.Name:lower() == "gardens"
 			and (gardens:IsA("Folder") or gardens:IsA("Model"))
 		then
 			for _, plot in ipairs(gardens:GetChildren()) do
-				local ownerName = plot:GetAttribute("Owner")
-				local ownerUserId = tonumber(plot:GetAttribute("owneruserid"))
-					or tonumber(plot:GetAttribute("OwnerUserId"))
+				if isOwnedPlot(plot) then
+					foundOwnedPlot = true
+					largestCount = math.max(
+						largestCount,
+						getAttributePlantCount(plot)
+					)
+				end
+			end
+		end
+	end
 
-				local ownedByPlayer =
-					ownerName == player.Name
-					or ownerUserId == player.UserId
+	return largestCount, foundOwnedPlot
+end
 
-				if ownedByPlayer then
-					local plantsFolder = plot:FindFirstChild("Plants")
+local function getLargestPlantsContainerCount(root)
+	local largestCount = 0
+	local foundContainer = false
 
-					if plantsFolder then
-						return #plantsFolder:GetChildren(), true
+	local function inspect(instance)
+		if instance.Name:lower() == "plants"
+			and (instance:IsA("Folder") or instance:IsA("Model"))
+		then
+			foundContainer = true
+			largestCount = math.max(
+				largestCount,
+				getPlantContainerCount(instance)
+			)
+		end
+	end
+
+	inspect(root)
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		inspect(descendant)
+	end
+
+	return largestCount, foundContainer
+end
+
+local function getOwnedPlotPlantsFolderCount()
+	local largestOwnedCount = 0
+	local foundOwnedPlot = false
+	local foundOwnedContainer = false
+
+	for _, gardens in ipairs(workspace:GetDescendants()) do
+		if gardens.Name:lower() == "gardens"
+			and (gardens:IsA("Folder") or gardens:IsA("Model"))
+		then
+			for _, plot in ipairs(gardens:GetChildren()) do
+				if isOwnedPlot(plot) then
+					foundOwnedPlot = true
+
+					local count, foundContainer =
+						getLargestPlantsContainerCount(plot)
+
+					if foundContainer then
+						foundOwnedContainer = true
+						largestOwnedCount = math.max(
+							largestOwnedCount,
+							count
+						)
 					end
 				end
 			end
 		end
 	end
 
-	return 0, false
+	return largestOwnedCount, foundOwnedPlot and foundOwnedContainer
 end
 
 local function getFallbackPlantsFolderCount()
 	local largestCount = 0
 
 	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if descendant.Name == "Plants"
-			and (descendant:IsA("Folder") or descendant:IsA("Model"))
+		if descendant.Name:lower() == "plants"
+			and (
+				descendant:IsA("Folder")
+				or descendant:IsA("Model")
+			)
 		then
 			largestCount = math.max(
 				largestCount,
-				#descendant:GetChildren()
+				getPlantContainerCount(descendant)
 			)
 		end
 	end
@@ -694,17 +858,30 @@ local function getFallbackPlantsFolderCount()
 end
 
 local function getRawCurrentPlantCount()
-	local targetPlantCount = #findMoonBloomPlants()
-	local folderPlantCount, foundOwnedFolder =
-		getOwnedPlotPlantsFolderCount()
+	-- Read the owned plot fresh every time and count objects marked by the
+	-- Plant or PlantName attribute. This is the authoritative count.
+	local attributePlantCount, foundOwnedPlot =
+		getOwnedPlotAttributePlantCount()
 
-	if not foundOwnedFolder then
-		folderPlantCount = getFallbackPlantsFolderCount()
+	if foundOwnedPlot and attributePlantCount > 0 then
+		return attributePlantCount
 	end
 
-	-- SeedName scanning can briefly miss replicated plants. The actual Plants
-	-- folder count is authoritative, while max() keeps older layouts working.
-	return math.max(targetPlantCount, folderPlantCount)
+	-- Compatibility fallbacks for layouts that do not expose those attributes.
+	local targetPlantCount = #findMoonBloomPlants()
+	local ownedFolderCount, foundOwnedFolder =
+		getOwnedPlotPlantsFolderCount()
+	local fallbackFolderCount = getFallbackPlantsFolderCount()
+
+	if foundOwnedFolder then
+		return math.max(
+			targetPlantCount,
+			ownedFolderCount,
+			fallbackFolderCount
+		)
+	end
+
+	return math.max(targetPlantCount, fallbackFolderCount)
 end
 
 local function getCurrentPlantCount()
