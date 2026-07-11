@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.6"
+local TEB_HUB_VERSION = "1.5.7"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -260,6 +260,13 @@ local sessionStartHarvestedFruitItemCount = 0
 
 local lastRatioGoodFruitCount = nil
 local lastRatioPlantCount = nil
+
+-- Exact snapshot used by the visible ratio label.
+-- Every plant gate and ratio decision must reuse this snapshot.
+local displayedRatioGoodFruitCount = 0
+local displayedRatioPlantCount = 0
+local displayedRatioValue = 0
+local displayedPlantGatePassed = false
 
 -- ============================================================
 -- CLOUD CONFIG (Cloudflare Worker + KV)
@@ -1165,12 +1172,17 @@ local function getFruitPlantRatio()
 end
 
 local function getCurrentPlantCount()
+	-- Compatibility helper. Automation decisions use the visible-label cache.
+	if displayedRatioPlantCount > 0 then
+		return displayedRatioPlantCount
+	end
+
 	local plants = findMoonBloomPlants()
 	return #plants
 end
 
 local function plantCountRequirementMet()
-	return getCurrentPlantCount() >= MIN_PLANTS_TO_START
+	return displayedPlantGatePassed
 end
 
 
@@ -1895,19 +1907,31 @@ local function updateRatioDisplay()
 	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
 	local plantStatus = "WAIT"
 
-	if plantCount >= MIN_PLANTS_TO_START then
+	displayedRatioGoodFruitCount = goodFruitCount
+	displayedRatioPlantCount = plantCount
+	displayedRatioValue = ratio
+	displayedPlantGatePassed =
+		plantCount >= MIN_PLANTS_TO_START
+
+	if displayedPlantGatePassed then
 		plantStatus = "OK"
 	end
 
 	ratioText.Text = string.format(
 		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]",
-		goodFruitCount,
-		plantCount,
-		ratio * 100,
-		plantCount,
+		displayedRatioGoodFruitCount,
+		displayedRatioPlantCount,
+		displayedRatioValue * 100,
+		displayedRatioPlantCount,
 		MIN_PLANTS_TO_START,
 		plantStatus
 	)
+
+	return
+		displayedRatioGoodFruitCount,
+		displayedRatioPlantCount,
+		displayedRatioValue,
+		displayedPlantGatePassed
 end
 
 local function applyRatioAutoControl()
@@ -1919,19 +1943,21 @@ local function applyRatioAutoControl()
 		return
 	end
 
-	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
+	local goodFruitCount = displayedRatioGoodFruitCount
+	local plantCount = displayedRatioPlantCount
+	local ratio = displayedRatioValue
 
-	if plantCount < MIN_PLANTS_TO_START then
+	if not displayedPlantGatePassed then
 		if enabled then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
-				"Plant count too low: " ..
+				"Visible ratio label plant count too low: " ..
 				plantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
-				". Automation stopped."
+				"."
 			)
 		end
 
@@ -2105,9 +2131,11 @@ toggleButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local currentPlantCount = getCurrentPlantCount()
+	updateRatioDisplay()
 
-	if not enabled and currentPlantCount < MIN_PLANTS_TO_START then
+	local currentPlantCount = displayedRatioPlantCount
+
+	if not enabled and not displayedPlantGatePassed then
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
@@ -2228,18 +2256,18 @@ local function automationLoop()
 			continue
 		end
 
-		local activePlantCount = getCurrentPlantCount()
+		local activePlantCount = displayedRatioPlantCount
 
-		if activePlantCount < MIN_PLANTS_TO_START then
+		if not displayedPlantGatePassed then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
-				"Plant count below requirement: " ..
+				"Visible ratio label plant count below requirement: " ..
 				activePlantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
-				". Automation stopped."
+				"."
 			)
 
 			task.wait(CHECK_DELAY)
