@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.9"
+local TEB_HUB_VERSION = "1.5.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -858,30 +858,38 @@ local function getFallbackPlantsFolderCount()
 end
 
 local function getRawCurrentPlantCount()
-	-- Read the owned plot fresh every time and count objects marked by the
-	-- Plant or PlantName attribute. This is the authoritative count.
-	local attributePlantCount, foundOwnedPlot =
-		getOwnedPlotAttributePlantCount()
+	-- Count every known source live. Plant/PlantName may exist only on one or
+	-- two wrapper objects, so it must never override the larger real count.
+	local attributePlantCount =
+		select(1, getOwnedPlotAttributePlantCount()) or 0
 
-	if foundOwnedPlot and attributePlantCount > 0 then
-		return attributePlantCount
-	end
+	local seedPlantCount = #findMoonBloomPlants()
 
-	-- Compatibility fallbacks for layouts that do not expose those attributes.
-	local targetPlantCount = #findMoonBloomPlants()
-	local ownedFolderCount, foundOwnedFolder =
-		getOwnedPlotPlantsFolderCount()
-	local fallbackFolderCount = getFallbackPlantsFolderCount()
+	local ownedFolderCount =
+		select(1, getOwnedPlotPlantsFolderCount()) or 0
 
-	if foundOwnedFolder then
-		return math.max(
-			targetPlantCount,
-			ownedFolderCount,
-			fallbackFolderCount
-		)
-	end
+	local fallbackFolderCount =
+		getFallbackPlantsFolderCount() or 0
 
-	return math.max(targetPlantCount, fallbackFolderCount)
+	-- One shared value is used by the ratio display and every automation gate.
+	return math.max(
+		attributePlantCount,
+		seedPlantCount,
+		ownedFolderCount,
+		fallbackFolderCount
+	)
+end
+
+local function getPlantCountDiagnostics()
+	local attributePlantCount =
+		select(1, getOwnedPlotAttributePlantCount()) or 0
+	local seedPlantCount = #findMoonBloomPlants()
+	local ownedFolderCount =
+		select(1, getOwnedPlotPlantsFolderCount()) or 0
+	local fallbackFolderCount =
+		getFallbackPlantsFolderCount() or 0
+
+	return attributePlantCount, seedPlantCount, ownedFolderCount, fallbackFolderCount
 end
 
 local function getCurrentPlantCount()
@@ -2185,12 +2193,19 @@ local function applyRatioAutoControl()
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
+			local attrCount, seedCount, ownedCount, fallbackCount =
+				getPlantCountDiagnostics()
+
 			setStatus(
-				"Plant count too low: " ..
-				plantCount ..
-				" / " ..
-				MIN_PLANTS_TO_START ..
-				". Exactly 1199 or more is allowed."
+				string.format(
+					"Plant count too low: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+					plantCount,
+					MIN_PLANTS_TO_START,
+					attrCount,
+					seedCount,
+					ownedCount,
+					fallbackCount
+				)
 			)
 		end
 
@@ -2371,12 +2386,19 @@ toggleButton.MouseButton1Click:Connect(function()
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 		updateToggleButton()
+		local attrCount, seedCount, ownedCount, fallbackCount =
+			getPlantCountDiagnostics()
+
 		setStatus(
-			"Cannot start yet. Plants: " ..
-			currentPlantCount ..
-			" / " ..
-			MIN_PLANTS_TO_START ..
-			"."
+			string.format(
+				"Cannot start yet. Plants: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+				currentPlantCount,
+				MIN_PLANTS_TO_START,
+				attrCount,
+				seedCount,
+				ownedCount,
+				fallbackCount
+			)
 		)
 		return
 	end
@@ -2497,12 +2519,19 @@ local function automationLoop()
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
+			local attrCount, seedCount, ownedCount, fallbackCount =
+				getPlantCountDiagnostics()
+
 			setStatus(
-				"Plant count below requirement: " ..
-				activePlantCount ..
-				" / " ..
-				MIN_PLANTS_TO_START ..
-				". Exactly 1199 or more is allowed."
+				string.format(
+					"Plant count below requirement: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+					activePlantCount,
+					MIN_PLANTS_TO_START,
+					attrCount,
+					seedCount,
+					ownedCount,
+					fallbackCount
+				)
 			)
 
 			task.wait(CHECK_DELAY)
