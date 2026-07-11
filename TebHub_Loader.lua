@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.5"
+local TEB_HUB_VERSION = "1.4.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -221,8 +221,10 @@ local ratioControlEnabled = true
 local startBelowRatio = 0.80
 local stopAboveRatio = 0.85
 
--- Automation will not start unless Moon/Hypno Bloom plant count reaches this.
+-- Automation will not start unless the owned plot's Plants folder reaches this.
+-- Exactly 1199 is valid; only values below 1199 fail.
 local MIN_PLANTS_TO_START = 1199
+local PLANT_COUNT_LOW_GRACE_SECONDS = 6
 
 local wateredForCurrentCondition = false
 local waitingForCollection = false
@@ -260,6 +262,8 @@ local sessionStartHarvestedFruitItemCount = 0
 
 local lastRatioGoodFruitCount = nil
 local lastRatioPlantCount = nil
+local lastConfirmedPlantCount = 0
+local plantCountBelowSince = nil
 
 -- ============================================================
 -- CLOUD CONFIG (Cloudflare Worker + KV)
@@ -642,6 +646,89 @@ local function findMoonBloomPlants()
 	end
 
 	return plants
+end
+
+local function getOwnedPlotPlantsFolderCount()
+	for _, gardens in ipairs(workspace:GetDescendants()) do
+		if gardens.Name == "Gardens"
+			and (gardens:IsA("Folder") or gardens:IsA("Model"))
+		then
+			for _, plot in ipairs(gardens:GetChildren()) do
+				local ownerName = plot:GetAttribute("Owner")
+				local ownerUserId = tonumber(plot:GetAttribute("owneruserid"))
+					or tonumber(plot:GetAttribute("OwnerUserId"))
+
+				local ownedByPlayer =
+					ownerName == player.Name
+					or ownerUserId == player.UserId
+
+				if ownedByPlayer then
+					local plantsFolder = plot:FindFirstChild("Plants")
+
+					if plantsFolder then
+						return #plantsFolder:GetChildren(), true
+					end
+				end
+			end
+		end
+	end
+
+	return 0, false
+end
+
+local function getFallbackPlantsFolderCount()
+	local largestCount = 0
+
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant.Name == "Plants"
+			and (descendant:IsA("Folder") or descendant:IsA("Model"))
+		then
+			largestCount = math.max(
+				largestCount,
+				#descendant:GetChildren()
+			)
+		end
+	end
+
+	return largestCount
+end
+
+local function getRawCurrentPlantCount()
+	local targetPlantCount = #findMoonBloomPlants()
+	local folderPlantCount, foundOwnedFolder =
+		getOwnedPlotPlantsFolderCount()
+
+	if not foundOwnedFolder then
+		folderPlantCount = getFallbackPlantsFolderCount()
+	end
+
+	-- SeedName scanning can briefly miss replicated plants. The actual Plants
+	-- folder count is authoritative, while max() keeps older layouts working.
+	return math.max(targetPlantCount, folderPlantCount)
+end
+
+local function getCurrentPlantCount()
+	local currentCount = getRawCurrentPlantCount()
+
+	if currentCount >= MIN_PLANTS_TO_START then
+		lastConfirmedPlantCount = currentCount
+		plantCountBelowSince = nil
+		return currentCount
+	end
+
+	-- Do not instantly stop because one or two plants briefly disappear during
+	-- replication/reparenting. Keep the last valid count for six seconds.
+	if lastConfirmedPlantCount >= MIN_PLANTS_TO_START then
+		plantCountBelowSince = plantCountBelowSince or os.clock()
+
+		if os.clock() - plantCountBelowSince
+			< PLANT_COUNT_LOW_GRACE_SECONDS
+		then
+			return lastConfirmedPlantCount
+		end
+	end
+
+	return currentCount
 end
 
 local function isFruitFullyGrown(fruit)
@@ -1145,7 +1232,7 @@ local function getFruitPlantRatio()
 	local plants = findMoonBloomPlants()
 
 	local goodFruitCount = 0
-	local plantCount = #plants
+	local plantCount = getCurrentPlantCount()
 	local ratio = 0
 
 	for _, fruitData in ipairs(fruits) do
@@ -1162,11 +1249,6 @@ local function getFruitPlantRatio()
 	end
 
 	return goodFruitCount, plantCount, ratio
-end
-
-local function getCurrentPlantCount()
-	local plants = findMoonBloomPlants()
-	return #plants
 end
 
 local function plantCountRequirementMet()
@@ -1931,7 +2013,7 @@ local function applyRatioAutoControl()
 				plantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
-				". Automation stopped."
+				". Exactly 1199 or more is allowed."
 			)
 		end
 
@@ -2243,7 +2325,7 @@ local function automationLoop()
 				activePlantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
-				". Automation stopped."
+				". Exactly 1199 or more is allowed."
 			)
 
 			task.wait(CHECK_DELAY)
