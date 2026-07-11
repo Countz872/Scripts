@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.8"
+local TEB_HUB_VERSION = "1.5.9"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -216,13 +216,14 @@ local kgFilterEnabled = true
 local kgMode = "Above" -- "Above" or "Below"
 
 -- Defaults: ratio auto ON, start below 80%, stop above 85%
--- Ratio is good-KG Moon/Hypno Bloom fruits / Moon/Hypno Bloom plants.
+-- Ratio is good-KG Moon/Hypno Bloom fruits / owned-plot plant children.
 local ratioControlEnabled = true
 local startBelowRatio = 0.80
 local stopAboveRatio = 0.85
 
--- Automation will not start unless Moon/Hypno Bloom plant count reaches this.
-local MIN_PLANTS_TO_START = 1199
+-- Plant count is display/ratio data only. It never blocks automation.
+-- Automation becomes available after Roblox and this Bloom module finish loading.
+local scriptFullyLoaded = false
 
 local wateredForCurrentCondition = false
 local waitingForCollection = false
@@ -1256,7 +1257,7 @@ local function getCurrentPlantCount()
 end
 
 local function plantCountRequirementMet()
-	return getOwnedPlotPlantCount() >= MIN_PLANTS_TO_START
+	return scriptFullyLoaded
 end
 
 
@@ -1980,26 +1981,19 @@ end
 local function updateRatioDisplay()
 	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
 	local _, ownedPlot = getOwnedPlotPlantsFolder()
-	local plantStatus = "WAIT"
 
 	displayedRatioGoodFruitCount = goodFruitCount
 	displayedRatioPlantCount = plantCount
 	displayedRatioValue = ratio
-	displayedPlantGatePassed =
-		plantCount >= MIN_PLANTS_TO_START
-
-	if displayedPlantGatePassed then
-		plantStatus = "OK"
-	end
+	displayedPlantGatePassed = scriptFullyLoaded
 
 	ratioText.Text = string.format(
-		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s] [%s]",
+		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d [%s] [%s]",
 		displayedRatioGoodFruitCount,
 		displayedRatioPlantCount,
 		displayedRatioValue * 100,
 		displayedRatioPlantCount,
-		MIN_PLANTS_TO_START,
-		plantStatus,
+		scriptFullyLoaded and "READY" or "LOADING",
 		ownedPlot and ownedPlot.Name or "NO OWNED PLOT"
 	)
 
@@ -2007,7 +2001,7 @@ local function updateRatioDisplay()
 		displayedRatioGoodFruitCount,
 		displayedRatioPlantCount,
 		displayedRatioValue,
-		displayedPlantGatePassed
+		scriptFullyLoaded
 end
 
 local function applyRatioAutoControl()
@@ -2022,27 +2016,6 @@ local function applyRatioAutoControl()
 	local goodFruitCount = displayedRatioGoodFruitCount
 	local plantCount = displayedRatioPlantCount
 	local ratio = displayedRatioValue
-
-	if not displayedPlantGatePassed then
-		if enabled then
-			enabled = false
-			wateredForCurrentCondition = false
-			waitingForCollection = false
-			setStatus(
-				"Owned plot Plants child count too low: " ..
-				plantCount ..
-				" / " ..
-				MIN_PLANTS_TO_START ..
-				"."
-			)
-		end
-
-		return
-	end
-
-	if plantCount <= 0 then
-		return
-	end
 
 	if goodFruitCount ~= lastRatioGoodFruitCount or plantCount ~= lastRatioPlantCount then
 		if not waitingForCollection then
@@ -2207,25 +2180,16 @@ toggleButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	updateRatioDisplay()
-
-	local currentPlantCount = displayedRatioPlantCount
-
-	if not enabled and not displayedPlantGatePassed then
+	if not scriptFullyLoaded then
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 		updateToggleButton()
-		setStatus(
-			"Cannot start. Owned plot Plants children: " ..
-			currentPlantCount ..
-			" / " ..
-			MIN_PLANTS_TO_START ..
-			"."
-		)
+		setStatus("Waiting for the game and Bloom script to finish loading.")
 		return
 	end
 
+	updateRatioDisplay()
 	enabled = not enabled
 	wateredForCurrentCondition = false
 	waitingForCollection = false
@@ -2306,6 +2270,12 @@ local function automationLoop()
 	loopRunning = true
 
 	while automationAlive do
+		if not scriptFullyLoaded then
+			setStatus("Waiting for Roblox and Bloom to finish loading.")
+			task.wait(CHECK_DELAY)
+			continue
+		end
+
 		updateItemButtons()
 		updateKgButtons()
 		updateRatioButton()
@@ -2328,24 +2298,6 @@ local function automationLoop()
 		updateFruitDisplay()
 
 		if not enabled then
-			task.wait(CHECK_DELAY)
-			continue
-		end
-
-		local activePlantCount = displayedRatioPlantCount
-
-		if not displayedPlantGatePassed then
-			enabled = false
-			wateredForCurrentCondition = false
-			waitingForCollection = false
-			setStatus(
-				"Owned plot Plants child count below requirement: " ..
-				activePlantCount ..
-				" / " ..
-				MIN_PLANTS_TO_START ..
-				"."
-			)
-
 			task.wait(CHECK_DELAY)
 			continue
 		end
@@ -2443,7 +2395,14 @@ end
 
 startHarvestTracker()
 
-task.spawn(automationLoop)
+if not game:IsLoaded() then
+	setStatus("Waiting for Roblox to finish loading.")
+	game.Loaded:Wait()
+end
+
+-- Reaching this point means the full Bloom source, UI, cloud settings,
+-- harvest tracker, and Roblox client have all initialized.
+scriptFullyLoaded = true
 
 updateMasterButton()
 updateToggleButton()
@@ -2452,6 +2411,8 @@ updateRatioButton()
 updateItemButtons()
 updateRatioDisplay()
 updateFruitDisplay()
+
+task.spawn(automationLoop)
 if cloudLastError then
 	setStatus("Ready. Cloud config error: " .. tostring(cloudLastError))
 elseif cloudLoaded then
