@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.4"
+local TEB_HUB_VERSION = "1.4.5"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2431,6 +2431,8 @@ local mailerRuntime = {
 	VerifyTimeout = 25,
 	VerifyInterval = 0.35,
 	ServerDailyLimitReached = false,
+	DailyLimitReachedAt = nil,
+	PendingLimitResetSave = false,
 	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
 	WatchedLimitText = setmetatable({}, { __mode = "k" }),
 	TargetModeLocked = false,
@@ -2440,9 +2442,9 @@ local mailerRuntime = {
 -- This script waits this long between each mail packet.
 local MAIL_COOLDOWN_SECONDS = 10.75
 
--- Rolling mail allowance. The exact game reset window can be changed in the UI.
+-- The game allows 50 successful gift mails per fixed 12-hour window.
 local DEFAULT_MAIL_LIMIT_COUNT = 50
-local DEFAULT_MAIL_LIMIT_WINDOW_HOURS = 24
+local DEFAULT_MAIL_LIMIT_WINDOW_HOURS = 12
 
 local DEFAULT_TARGET_VALUE = "1B"
 local DEFAULT_TARGET_FRUIT_COUNT = 20
@@ -2458,10 +2460,7 @@ local mailLimitCount = math.max(
 	math.floor(tonumber(mailerCloudData and mailerCloudData.mailLimitCount) or DEFAULT_MAIL_LIMIT_COUNT)
 )
 
-local mailLimitWindowHours = math.max(
-	1,
-	tonumber(mailerCloudData and mailerCloudData.mailLimitWindowHours) or DEFAULT_MAIL_LIMIT_WINDOW_HOURS
-)
+local mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
 
 local mailUsageTimestamps = {}
 
@@ -2497,7 +2496,46 @@ local function getMailLimitState()
 	local resetIn = 0
 
 	if used > 0 then
-		resetIn = math.max(0, (mailUsageTimestamps[1] + (mailLimitWindowHours * 3600)) - now)
+		resetIn = math.max(
+			0,
+			(mailUsageTimestamps[1] + (mailLimitWindowHours * 3600)) - now
+		)
+	end
+
+	if mailerRuntime.ServerDailyLimitReached then
+		local reachedAt = tonumber(mailerRuntime.DailyLimitReachedAt)
+
+		if reachedAt then
+			local serverResetIn = math.max(
+				0,
+				(reachedAt + (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)) - now
+			)
+
+			resetIn = math.max(resetIn, serverResetIn)
+
+			if serverResetIn <= 0 then
+				mailerRuntime.ServerDailyLimitReached = false
+				mailerRuntime.DailyLimitReachedAt = nil
+				mailerRuntime.PendingLimitResetSave = true
+
+				used = pruneMailUsage(now)
+				remaining = math.max(0, mailLimitCount - used)
+
+				if used > 0 then
+					resetIn = math.max(
+						0,
+						(mailUsageTimestamps[1]
+							+ (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600))
+							- now
+					)
+				else
+					resetIn = 0
+				end
+			end
+		elseif remaining > 0 then
+			mailerRuntime.ServerDailyLimitReached = false
+			mailerRuntime.PendingLimitResetSave = true
+		end
 	end
 
 	return used, remaining, resetIn
@@ -3317,7 +3355,8 @@ mailWindowBox.Position = UDim2.fromOffset(124, 204)
 mailWindowBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 mailWindowBox.BorderSizePixel = 0
 mailWindowBox.Text = tostring(mailLimitWindowHours)
-mailWindowBox.PlaceholderText = "24"
+mailWindowBox.PlaceholderText = "12"
+mailWindowBox.TextEditable = false
 mailWindowBox.Font = Enum.Font.GothamBold
 mailWindowBox.TextSize = 10
 mailWindowBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -6402,8 +6441,9 @@ local function buildMailerCloudSettings()
 		packetSequence = seqBox.Text,
 		fruitCount = math.max(1, math.floor(tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT)),
 		mailLimitCount = mailLimitCount,
-		mailLimitWindowHours = mailLimitWindowHours,
+		mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS,
 		mailUsageTimestamps = mailUsageTimestamps,
+		dailyLimitReachedAt = mailerRuntime.DailyLimitReachedAt,
 	}
 end
 
@@ -6449,10 +6489,7 @@ _G.TEBHubCloudSections.Mailer = {
 			mailLimitCount = loadedLimitCount
 		end
 
-		local loadedWindow = tonumber(data.mailLimitWindowHours)
-		if loadedWindow and loadedWindow > 0 then
-			mailLimitWindowHours = loadedWindow
-		end
+		mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
 
 		if type(data.mailUsageTimestamps) == "table" then
 			table.clear(mailUsageTimestamps)
@@ -6463,6 +6500,27 @@ _G.TEBHubCloudSections.Mailer = {
 					table.insert(mailUsageTimestamps, timestamp)
 				end
 			end
+		end
+
+		local loadedReachedAt = tonumber(data.dailyLimitReachedAt)
+		local loadNow = os.time()
+
+		if loadedReachedAt
+			and loadedReachedAt <= loadNow + 300
+			and loadNow < loadedReachedAt
+				+ (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)
+		then
+			mailerRuntime.ServerDailyLimitReached = true
+			mailerRuntime.DailyLimitReachedAt = loadedReachedAt
+
+			table.clear(mailUsageTimestamps)
+
+			for _ = 1, mailLimitCount do
+				table.insert(mailUsageTimestamps, loadedReachedAt)
+			end
+		else
+			mailerRuntime.ServerDailyLimitReached = false
+			mailerRuntime.DailyLimitReachedAt = nil
 		end
 
 		pruneMailUsage()
@@ -6477,8 +6535,14 @@ _G.TEBHubCloudSections.Mailer = {
 
 local function updateMailLimitDisplay()
 	local used, remaining, resetIn = getMailLimitState()
+	mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
 	mailLimitCountBox.Text = tostring(mailLimitCount)
-	mailWindowBox.Text = tostring(mailLimitWindowHours)
+	mailWindowBox.Text = tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
+
+	if mailerRuntime.PendingLimitResetSave then
+		mailerRuntime.PendingLimitResetSave = false
+		queueMailerCloudSave()
+	end
 
 	if remaining <= 0 then
 		mailLimitStatus.Text = string.format(
@@ -6531,15 +6595,25 @@ function mailerRuntime.MarkDailyGiftLimitReached(sourceText)
 	mailing = false
 
 	local now = os.time()
-	pruneMailUsage(now)
+	mailerRuntime.DailyLimitReachedAt = now
 
-	while #mailUsageTimestamps < mailLimitCount do
+	-- A detected server limit starts one fresh 12-hour cooldown from the
+	-- current time. All allowance entries share the same expiry.
+	table.clear(mailUsageTimestamps)
+
+	for _ = 1, mailLimitCount do
 		table.insert(mailUsageTimestamps, now)
 	end
 
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
-	addLog(mailerRuntime.DailyLimitWarningText, Color3.fromRGB(255, 90, 90))
+	addLog(
+		mailerRuntime.DailyLimitWarningText
+			.. " Mailer reset in "
+			.. formatDuration(DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)
+			.. ".",
+		Color3.fromRGB(255, 90, 90)
+	)
 
 	if debugTrace then
 		debugTrace("DAILY LIMIT DETECTED: " .. tostring(sourceText))
@@ -6634,8 +6708,8 @@ mailLimitCountBox.FocusLost:Connect(function()
 end)
 
 mailWindowBox.FocusLost:Connect(function()
-	local value = tonumber(mailWindowBox.Text)
-	mailLimitWindowHours = math.clamp(value and value > 0 and value or DEFAULT_MAIL_LIMIT_WINDOW_HOURS, 1, 168)
+	mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
+	mailWindowBox.Text = tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
 	pruneMailUsage()
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
@@ -6772,7 +6846,14 @@ task.defer(function()
 	end
 end)
 
-	addLog("Loaded mailer with rolling " .. tostring(mailLimitCount) .. "-mail / " .. tostring(mailLimitWindowHours) .. "h tracker.", Color3.fromRGB(170, 255, 170))
+	addLog(
+	"Loaded mailer with fixed "
+		.. tostring(mailLimitCount)
+		.. "-mail / "
+		.. tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
+		.. "h tracker.",
+	Color3.fromRGB(170, 255, 170)
+)
 debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
 debugTrace("Local player: " .. tostring(player and player.Name))
 debugTrace("GetUserIdFromNameAsync method: " .. tostring(Players.GetUserIdFromNameAsync))
