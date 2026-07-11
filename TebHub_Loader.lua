@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.5"
+local TEB_HUB_VERSION = "1.5.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -221,10 +221,8 @@ local ratioControlEnabled = true
 local startBelowRatio = 0.80
 local stopAboveRatio = 0.85
 
--- Automation will not start unless the owned plot's Plants folder reaches this.
--- Exactly 1199 is valid; only values below 1199 fail.
+-- Automation will not start unless Moon/Hypno Bloom plant count reaches this.
 local MIN_PLANTS_TO_START = 1199
-local PLANT_COUNT_LOW_GRACE_SECONDS = 6
 
 local wateredForCurrentCondition = false
 local waitingForCollection = false
@@ -262,13 +260,6 @@ local sessionStartHarvestedFruitItemCount = 0
 
 local lastRatioGoodFruitCount = nil
 local lastRatioPlantCount = nil
-local lastDisplayedPlantCount = 0
-local lastDisplayedPlantCountAt = 0
-local plantGateUnlocked = false
-local plantGateUnlockedCount = 0
-local plantGatePaused = false
-local lastConfirmedPlantCount = 0
-local plantCountBelowSince = nil
 
 -- ============================================================
 -- CLOUD CONFIG (Cloudflare Worker + KV)
@@ -651,305 +642,6 @@ local function findMoonBloomPlants()
 	end
 
 	return plants
-end
-
-local function getPlantContainerCount(container)
-	if not container then
-		return 0
-	end
-
-	local current = container
-	local count = #current:GetChildren()
-	local unwrapDepth = 0
-
-	-- Some plots use:
-	-- Plot > Plants > wrapper folder > 1200 plant instances.
-	-- Unwrap folder-only layers, but never enter a Model because that may be
-	-- an individual plant containing many visual parts.
-	while count == 1 and unwrapDepth < 8 do
-		local onlyChild = current:GetChildren()[1]
-
-		if not onlyChild or not onlyChild:IsA("Folder") then
-			break
-		end
-
-		current = onlyChild
-		count = #current:GetChildren()
-		unwrapDepth += 1
-	end
-
-	return count
-end
-
-local function getPlotOwnerValues(plot)
-	local ownerName =
-		plot:GetAttribute("Owner")
-		or plot:GetAttribute("owner")
-		or plot:GetAttribute("OwnerName")
-		or plot:GetAttribute("ownername")
-
-	local ownerUserId =
-		tonumber(plot:GetAttribute("owneruserid"))
-		or tonumber(plot:GetAttribute("OwnerUserId"))
-		or tonumber(plot:GetAttribute("OwnerUserID"))
-		or tonumber(plot:GetAttribute("UserId"))
-		or tonumber(plot:GetAttribute("userId"))
-
-	local ownerObject =
-		plot:FindFirstChild("Owner")
-		or plot:FindFirstChild("owner")
-
-	if ownerObject and ownerObject:IsA("ValueBase") then
-		local value = ownerObject.Value
-
-		if typeof(value) == "Instance" and value:IsA("Player") then
-			ownerName = ownerName or value.Name
-			ownerUserId = ownerUserId or value.UserId
-		elseif type(value) == "string" then
-			ownerName = ownerName or value
-		elseif type(value) == "number" then
-			ownerUserId = ownerUserId or value
-		end
-	end
-
-	return ownerName, ownerUserId
-end
-
-local function isOwnedPlot(plot)
-	local ownerName, ownerUserId = getPlotOwnerValues(plot)
-
-	if ownerUserId and ownerUserId == player.UserId then
-		return true
-	end
-
-	if type(ownerName) == "string"
-		and ownerName:lower() == player.Name:lower()
-	then
-		return true
-	end
-
-	return false
-end
-
-local function hasPlantIdentityAttribute(instance)
-	return instance:GetAttribute("Plant") ~= nil
-		or instance:GetAttribute("plant") ~= nil
-		or instance:GetAttribute("PlantName") ~= nil
-		or instance:GetAttribute("plantName") ~= nil
-		or instance:GetAttribute("plantname") ~= nil
-end
-
-local function getAttributePlantCount(root)
-	if not root then
-		return 0
-	end
-
-	local counted = {}
-	local count = 0
-
-	local function inspect(instance)
-		if hasPlantIdentityAttribute(instance) and not counted[instance] then
-			counted[instance] = true
-			count += 1
-		end
-	end
-
-	inspect(root)
-
-	for _, descendant in ipairs(root:GetDescendants()) do
-		inspect(descendant)
-	end
-
-	return count
-end
-
-local function getOwnedPlotAttributePlantCount()
-	local largestCount = 0
-	local foundOwnedPlot = false
-
-	for _, gardens in ipairs(workspace:GetDescendants()) do
-		if gardens.Name:lower() == "gardens"
-			and (gardens:IsA("Folder") or gardens:IsA("Model"))
-		then
-			for _, plot in ipairs(gardens:GetChildren()) do
-				if isOwnedPlot(plot) then
-					foundOwnedPlot = true
-					largestCount = math.max(
-						largestCount,
-						getAttributePlantCount(plot)
-					)
-				end
-			end
-		end
-	end
-
-	return largestCount, foundOwnedPlot
-end
-
-local function getLargestPlantsContainerCount(root)
-	local largestCount = 0
-	local foundContainer = false
-
-	local function inspect(instance)
-		if instance.Name:lower() == "plants"
-			and (instance:IsA("Folder") or instance:IsA("Model"))
-		then
-			foundContainer = true
-			largestCount = math.max(
-				largestCount,
-				getPlantContainerCount(instance)
-			)
-		end
-	end
-
-	inspect(root)
-
-	for _, descendant in ipairs(root:GetDescendants()) do
-		inspect(descendant)
-	end
-
-	return largestCount, foundContainer
-end
-
-local function getOwnedPlotPlantsFolderCount()
-	local largestOwnedCount = 0
-	local foundOwnedPlot = false
-	local foundOwnedContainer = false
-
-	for _, gardens in ipairs(workspace:GetDescendants()) do
-		if gardens.Name:lower() == "gardens"
-			and (gardens:IsA("Folder") or gardens:IsA("Model"))
-		then
-			for _, plot in ipairs(gardens:GetChildren()) do
-				if isOwnedPlot(plot) then
-					foundOwnedPlot = true
-
-					local count, foundContainer =
-						getLargestPlantsContainerCount(plot)
-
-					if foundContainer then
-						foundOwnedContainer = true
-						largestOwnedCount = math.max(
-							largestOwnedCount,
-							count
-						)
-					end
-				end
-			end
-		end
-	end
-
-	return largestOwnedCount, foundOwnedPlot and foundOwnedContainer
-end
-
-local function getFallbackPlantsFolderCount()
-	local largestCount = 0
-
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if descendant.Name:lower() == "plants"
-			and (
-				descendant:IsA("Folder")
-				or descendant:IsA("Model")
-			)
-		then
-			largestCount = math.max(
-				largestCount,
-				getPlantContainerCount(descendant)
-			)
-		end
-	end
-
-	return largestCount
-end
-
-local function getRawCurrentPlantCount()
-	-- Count every known source live. Plant/PlantName may exist only on one or
-	-- two wrapper objects, so it must never override the larger real count.
-	local attributePlantCount =
-		select(1, getOwnedPlotAttributePlantCount()) or 0
-
-	local seedPlantCount = #findMoonBloomPlants()
-
-	local ownedFolderCount =
-		select(1, getOwnedPlotPlantsFolderCount()) or 0
-
-	local fallbackFolderCount =
-		getFallbackPlantsFolderCount() or 0
-
-	-- One shared value is used by the ratio display and every automation gate.
-	return math.max(
-		attributePlantCount,
-		seedPlantCount,
-		ownedFolderCount,
-		fallbackFolderCount
-	)
-end
-
-local function getPlantCountDiagnostics()
-	local attributePlantCount =
-		select(1, getOwnedPlotAttributePlantCount()) or 0
-	local seedPlantCount = #findMoonBloomPlants()
-	local ownedFolderCount =
-		select(1, getOwnedPlotPlantsFolderCount()) or 0
-	local fallbackFolderCount =
-		getFallbackPlantsFolderCount() or 0
-
-	return attributePlantCount, seedPlantCount, ownedFolderCount, fallbackFolderCount
-end
-
-local function getCurrentPlantCount()
-	-- The Optimizer counter is authoritative because it already produces the
-	-- correct visible Plants count. Bloom must not run a competing scanner.
-	local shared = _G.TEBSharedCounts
-	local optimizerCount =
-		type(shared) == "table"
-		and tonumber(shared.Plants)
-		or nil
-
-	if optimizerCount and optimizerCount >= 0 then
-		optimizerCount = math.floor(optimizerCount)
-
-		if optimizerCount >= MIN_PLANTS_TO_START then
-			lastConfirmedPlantCount = optimizerCount
-			plantCountBelowSince = nil
-		end
-
-		return optimizerCount
-	end
-
-	-- Startup-only fallback in case Bloom is enabled before Optimizer has
-	-- published its first count.
-	local currentCount = getRawCurrentPlantCount()
-
-	if currentCount >= MIN_PLANTS_TO_START then
-		lastConfirmedPlantCount = currentCount
-		plantCountBelowSince = nil
-		return currentCount
-	end
-
-	if lastConfirmedPlantCount >= MIN_PLANTS_TO_START then
-		return lastConfirmedPlantCount
-	end
-
-	return currentCount
-end
-
-local function getGatePlantCount()
-	local liveCount = getCurrentPlantCount()
-	local displayedCountIsRecent =
-		lastDisplayedPlantCountAt > 0
-		and (os.clock() - lastDisplayedPlantCountAt) <= 15
-
-	-- When the visible ratio label says 1200 / 1199 [OK], all automation
-	-- gates must honor that exact same count instead of doing another scan
-	-- that can briefly return a wrapper count such as 1 or 2.
-	if displayedCountIsRecent
-		and lastDisplayedPlantCount >= MIN_PLANTS_TO_START
-	then
-		return math.max(liveCount, lastDisplayedPlantCount)
-	end
-
-	return liveCount
 end
 
 local function isFruitFullyGrown(fruit)
@@ -1449,18 +1141,32 @@ local function checkKgCondition()
 end
 
 local function getFruitPlantRatio()
-	-- Use the same accurate fruit breakdown displayed in Bloom.
-	-- "Good fruits" for the ratio means Good Ripe only:
-	-- fully grown fruits that pass the current KG condition.
-	local _, goodRipeCount = getFullFruitBreakdown()
-	local plantCount = getCurrentPlantCount()
+	local fruits = findMoonBloomFruits()
+	local plants = findMoonBloomPlants()
+
+	local goodFruitCount = 0
+	local plantCount = #plants
 	local ratio = 0
 
-	if plantCount > 0 then
-		ratio = goodRipeCount / plantCount
+	for _, fruitData in ipairs(fruits) do
+		-- Important:
+		-- Ratio counts any fruit that PASSES the KG filter, regardless of growth stage.
+		-- Bad KG Moon/Hypno fruits should be collected, so they should NOT count toward stop ratio.
+		if passesKg(fruitData) then
+			goodFruitCount += 1
+		end
 	end
 
-	return goodRipeCount, plantCount, ratio
+	if plantCount > 0 then
+		ratio = goodFruitCount / plantCount
+	end
+
+	return goodFruitCount, plantCount, ratio
+end
+
+local function getCurrentPlantCount()
+	local plants = findMoonBloomPlants()
+	return #plants
 end
 
 local function plantCountRequirementMet()
@@ -1996,13 +1702,6 @@ ratioText.Font = Enum.Font.Code
 ratioText.TextXAlignment = Enum.TextXAlignment.Left
 ratioText.Parent = body
 
-local function getPlantGateFromRatioLabel()
-	-- Kept under the existing name to avoid disturbing callers.
-	-- The decision now comes directly from the Optimizer's shared counter.
-	local plantCount = getCurrentPlantCount()
-	return plantCount, plantCount >= MIN_PLANTS_TO_START
-end
-
 -- SECTION D: Sprinklers (panel: y=336, height=126)
 addSectionPanel(336, 126, "💧  SPRINKLERS TO PLACE", ACCENT_GOLD)
 
@@ -2193,18 +1892,16 @@ local function updateFruitDisplay()
 end
 
 local function updateRatioDisplay()
-	local goodRipeCount, plantCount, ratio = getFruitPlantRatio()
-	local plantStatus =
-		plantCount >= MIN_PLANTS_TO_START and "OK" or "WAIT"
+	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
+	local plantStatus = "WAIT"
 
-	lastDisplayedPlantCount = plantCount
-	lastDisplayedPlantCountAt = os.clock()
-	plantGateUnlocked = plantCount >= MIN_PLANTS_TO_START
-	plantGateUnlockedCount = plantCount
+	if plantCount >= MIN_PLANTS_TO_START then
+		plantStatus = "OK"
+	end
 
 	ratioText.Text = string.format(
-		"Ratio: %d good ripe / %d plants = %.2f%%\nPlants: %d / %d [%s] [OPTIMIZER]",
-		goodRipeCount,
+		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]",
+		goodFruitCount,
 		plantCount,
 		ratio * 100,
 		plantCount,
@@ -2213,7 +1910,7 @@ local function updateRatioDisplay()
 	)
 end
 
-local function applyRatioAutoControl(plantCount)
+local function applyRatioAutoControl()
 	if not masterEnabled then
 		return
 	end
@@ -2222,11 +1919,23 @@ local function applyRatioAutoControl(plantCount)
 		return
 	end
 
-	local _, goodFruitCount = getFullFruitBreakdown()
-	local ratio = 0
+	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
 
-	if plantCount > 0 then
-		ratio = goodFruitCount / plantCount
+	if plantCount < MIN_PLANTS_TO_START then
+		if enabled then
+			enabled = false
+			wateredForCurrentCondition = false
+			waitingForCollection = false
+			setStatus(
+				"Plant count too low: " ..
+				plantCount ..
+				" / " ..
+				MIN_PLANTS_TO_START ..
+				". Automation stopped."
+			)
+		end
+
+		return
 	end
 
 	if plantCount <= 0 then
@@ -2391,32 +2100,24 @@ toggleButton.MouseButton1Click:Connect(function()
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
-		plantGatePaused = false
 		updateToggleButton()
 		setStatus("Master is OFF. Turn Master ON before enabling automation.")
 		return
 	end
 
-	-- Read the exact visible Plants: X / 1199 [OK] label.
-	-- Only populate it once if this is an extremely early click.
-	if not tostring(ratioText.Text):find("Plants:", 1, true) then
-		updateRatioDisplay()
-	end
+	local currentPlantCount = getCurrentPlantCount()
 
-	local currentPlantCount, plantGatePassed =
-		getPlantGateFromRatioLabel()
-
-	if not enabled and not plantGatePassed then
+	if not enabled and currentPlantCount < MIN_PLANTS_TO_START then
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 		updateToggleButton()
 		setStatus(
-			string.format(
-				"Cannot start until Optimizer reports Plants %d / %d [OK].",
-				currentPlantCount,
-				MIN_PLANTS_TO_START
-			)
+			"Cannot start yet. Plants: " ..
+			currentPlantCount ..
+			" / " ..
+			MIN_PLANTS_TO_START ..
+			"."
 		)
 		return
 	end
@@ -2424,11 +2125,6 @@ toggleButton.MouseButton1Click:Connect(function()
 	enabled = not enabled
 	wateredForCurrentCondition = false
 	waitingForCollection = false
-
-	if enabled then
-		plantGatePaused = false
-	end
-
 	updateToggleButton()
 	queueCloudSave()
 
@@ -2440,10 +2136,6 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 minimizeButton.MouseButton1Click:Connect(function()
-	if _G.TEB_EMBEDDED_MODE == true then
-		return
-	end
-
 	minimized = not minimized
 
 	if minimized then
@@ -2521,45 +2213,35 @@ local function automationLoop()
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
-			plantGatePaused = false
 			setStatus("Master OFF. Automation force-stopped.")
 			task.wait(CHECK_DELAY)
 			continue
 		end
 
-		local displayedPlantCount, visiblePlantGatePassed =
-			getPlantGateFromRatioLabel()
-
-		if enabled and not visiblePlantGatePassed then
-			plantGatePaused = true
-			setStatus(
-				string.format(
-					"Paused: Optimizer plant count is %d / %d [WAIT].",
-					displayedPlantCount,
-					MIN_PLANTS_TO_START
-				)
-			)
-			task.wait(CHECK_DELAY)
-			continue
-		end
-
-		if visiblePlantGatePassed and plantGatePaused then
-			plantGatePaused = false
-			setStatus(
-				string.format(
-					"Optimizer plant count is %d / %d [OK]. Resuming automation.",
-					displayedPlantCount,
-					MIN_PLANTS_TO_START
-				)
-			)
-		end
-
-		applyRatioAutoControl(displayedPlantCount)
+		applyRatioAutoControl()
 
 		local kgAllowed, totalFruits, passingFruits, kgMessage = checkKgCondition()
 		updateFruitDisplay()
 
 		if not enabled then
+			task.wait(CHECK_DELAY)
+			continue
+		end
+
+		local activePlantCount = getCurrentPlantCount()
+
+		if activePlantCount < MIN_PLANTS_TO_START then
+			enabled = false
+			wateredForCurrentCondition = false
+			waitingForCollection = false
+			setStatus(
+				"Plant count below requirement: " ..
+				activePlantCount ..
+				" / " ..
+				MIN_PLANTS_TO_START ..
+				". Automation stopped."
+			)
+
 			task.wait(CHECK_DELAY)
 			continue
 		end
