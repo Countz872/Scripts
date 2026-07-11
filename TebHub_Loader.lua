@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.1"
+local TEB_HUB_VERSION = "1.5.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -1457,7 +1457,8 @@ local function getFruitPlantRatio()
 end
 
 local function plantCountRequirementMet()
-	return getGatePlantCount() >= MIN_PLANTS_TO_START
+	-- Compatibility only. Active checks parse the visible ratio label.
+	return lastDisplayedPlantCount >= MIN_PLANTS_TO_START
 end
 
 
@@ -1989,6 +1990,26 @@ ratioText.Font = Enum.Font.Code
 ratioText.TextXAlignment = Enum.TextXAlignment.Left
 ratioText.Parent = body
 
+local function getPlantGateFromRatioLabel()
+	local labelText = tostring(ratioText.Text or "")
+	local displayedCount, displayedRequired, displayedStatus =
+		labelText:match(
+			"Plants:%s*(%d+)%s*/%s*(%d+)%s*%[([^%]]+)%]"
+		)
+
+	displayedCount = tonumber(displayedCount) or 0
+	displayedRequired =
+		tonumber(displayedRequired) or MIN_PLANTS_TO_START
+	displayedStatus = tostring(displayedStatus or ""):upper()
+
+	local passed =
+		displayedStatus == "OK"
+		and displayedCount >= displayedRequired
+		and displayedCount >= MIN_PLANTS_TO_START
+
+	return displayedCount, passed
+end
+
 -- SECTION D: Sprinklers (panel: y=336, height=126)
 addSectionPanel(336, 126, "💧  SPRINKLERS TO PLACE", ACCENT_GOLD)
 
@@ -2209,22 +2230,27 @@ local function applyRatioAutoControl()
 		return
 	end
 
-	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
-	local gatePlantCount = getGatePlantCount()
+	-- The visible ratio label is the only authority for the plant gate.
+	updateRatioDisplay()
 
-	if gatePlantCount ~= plantCount and gatePlantCount > 0 then
-		plantCount = gatePlantCount
+	local plantCount, plantGatePassed =
+		getPlantGateFromRatioLabel()
+
+	local goodFruitCount = select(1, getFruitPlantRatio())
+	local ratio = 0
+
+	if plantCount > 0 then
 		ratio = goodFruitCount / plantCount
 	end
 
-	if plantCount < MIN_PLANTS_TO_START then
+	if not plantGatePassed then
 		if enabled then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
 				string.format(
-					"Plant count too low: %d / %d. Ratio label count is authoritative.",
+					"Ratio label did not pass: Plants %d / %d [WAIT].",
 					plantCount,
 					MIN_PLANTS_TO_START
 				)
@@ -2401,18 +2427,20 @@ toggleButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	-- Refresh the visible ratio snapshot before checking the manual gate.
+	-- Refresh and read the exact visible Plants: X / 1199 [OK] label.
 	updateRatioDisplay()
-	local currentPlantCount = getGatePlantCount()
 
-	if not enabled and currentPlantCount < MIN_PLANTS_TO_START then
+	local currentPlantCount, plantGatePassed =
+		getPlantGateFromRatioLabel()
+
+	if not enabled and not plantGatePassed then
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 		updateToggleButton()
 		setStatus(
 			string.format(
-				"Cannot start yet. Plants: %d / %d. Ratio label count is authoritative.",
+				"Cannot start: ratio label says Plants %d / %d [WAIT].",
 				currentPlantCount,
 				MIN_PLANTS_TO_START
 			)
@@ -2530,15 +2558,16 @@ local function automationLoop()
 			continue
 		end
 
-		local activePlantCount = getGatePlantCount()
+		local activePlantCount, plantGatePassed =
+			getPlantGateFromRatioLabel()
 
-		if activePlantCount < MIN_PLANTS_TO_START then
+		if not plantGatePassed then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
 				string.format(
-					"Plant count below requirement: %d / %d. Ratio label count is authoritative.",
+					"Automation stopped because ratio label says Plants %d / %d [WAIT].",
 					activePlantCount,
 					MIN_PLANTS_TO_START
 				)
