@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.6"
+local TEB_HUB_VERSION = "1.4.7"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2507,6 +2507,11 @@ local MAX_FRUITS_PER_MAIL = 20
 -- "\x1D\x01>\fglynoxven320"
 local DEFAULT_PACKET_SEQUENCE_START_HEX = "3E"
 
+-- The packet sequence is accepted only in the 0x00-0x7F range.
+-- Starting at 0x3E and consuming two bytes per mail reaches 0x7F after
+-- 33 mails. Automatically roll back to the configured start before 0x80.
+local MAX_PACKET_SEQUENCE_BYTE = 0x7F
+
 local RECIPIENT_PACKET_DELAY = 0.12
 local MAIL_BATCH_DELAY = 0.20
 local mailerRuntime = {
@@ -2926,18 +2931,22 @@ local function parseHexByte(hex)
 
 	local value = tonumber(hex, 16)
 
-	if not value or value < 0 or value > 255 then
-		error("Invalid packet sequence hex: " .. tostring(hex))
+	if not value or value < 0 or value > MAX_PACKET_SEQUENCE_BYTE then
+		error(
+			"Invalid packet sequence hex: "
+				.. tostring(hex)
+				.. ". Use 00 through 7F."
+		)
 	end
 
 	return value
 end
 
-local function incrementPacketByte(value)
+local function incrementPacketByte(value, resetByte)
 	value += 1
 
-	if value > 255 then
-		value = 0
+	if value > MAX_PACKET_SEQUENCE_BYTE then
+		value = tonumber(resetByte) or 0
 	end
 
 	return value
@@ -6137,11 +6146,17 @@ local function sendPlans(plans, reason)
 	end
 
 	local packetByte
-	local okSeq, seqErr = pcall(function() packetByte = parseHexByte(seqBox.Text) end)
+	local okSeq, seqErr = pcall(function()
+		packetByte = parseHexByte(seqBox.Text)
+	end)
+
 	if not okSeq then
 		addLog("Bad sequence byte: " .. tostring(seqErr), Color3.fromRGB(255, 120, 120))
 		return
 	end
+
+	local packetSequenceResetByte = packetByte
+	local packetSequenceRollovers = 0
 
 	mailing = true
 	sendButton.Text = "Sending..."
@@ -6260,9 +6275,32 @@ local function sendPlans(plans, reason)
 						if #itemKeys == 0 then stoppedReason = "selected batch had no item keys" break end
 
 						local recipientByte = packetByte
-						packetByte = incrementPacketByte(packetByte)
+						packetByte = incrementPacketByte(
+							packetByte,
+							packetSequenceResetByte
+						)
+
 						local fruitPacketByte = packetByte
-						packetByte = incrementPacketByte(packetByte)
+						local nextPacketByte = incrementPacketByte(
+							packetByte,
+							packetSequenceResetByte
+						)
+
+						if nextPacketByte == packetSequenceResetByte
+							and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE
+						then
+							packetSequenceRollovers += 1
+							addLog(
+								string.format(
+									"Packet sequence rollover #%d: 7F → %02X. Continuing queue.",
+									packetSequenceRollovers,
+									packetSequenceResetByte
+								),
+								Color3.fromRGB(170, 220, 255)
+							)
+						end
+
+						packetByte = nextPacketByte
 						local batchValue = getSelectionTotal(batch)
 
 						addLog(string.format("%s mail %d | %d fruit(s) | Base %s | seq %02X/%02X", username, sentMails + 1, #itemKeys, formatShortNumber(batchValue), recipientByte, fruitPacketByte))
@@ -6410,7 +6448,19 @@ local function sendPlans(plans, reason)
 		end, debug.traceback)
 
 		if ok then
-			addLog("Mailing finished.", Color3.fromRGB(170, 255, 170))
+			addLog(
+				"Mailing finished"
+					.. (
+						packetSequenceRollovers > 0
+						and (
+							" with "
+							.. tostring(packetSequenceRollovers)
+							.. " packet-sequence rollover(s)."
+						)
+						or "."
+					),
+				Color3.fromRGB(170, 255, 170)
+			)
 		else
 			addLog("Send error: " .. tostring(err), Color3.fromRGB(255, 120, 120))
 			if debugTrace then
