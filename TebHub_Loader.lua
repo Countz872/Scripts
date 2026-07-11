@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.7"
+local TEB_HUB_VERSION = "1.5.8"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -1147,12 +1147,92 @@ local function checkKgCondition()
 	return true, total, passing, "KG condition passed."
 end
 
+local function ownerValueMatchesLocalPlayer(value)
+	if value == nil then
+		return false
+	end
+
+	if typeof(value) == "number" then
+		return value == player.UserId
+	end
+
+	if typeof(value) == "string" then
+		local trimmed = value:match("^%s*(.-)%s*$") or value
+		local numericValue = tonumber(trimmed)
+
+		if numericValue and numericValue == player.UserId then
+			return true
+		end
+
+		return trimmed:lower() == player.Name:lower()
+	end
+
+	return false
+end
+
+local function plotBelongsToLocalPlayer(plot)
+	-- Attribute names reported by the game, including capitalization variants.
+	local ownerAttributes = {
+		"ownerid",
+		"OwnerId",
+		"OwnerID",
+		"owneruserid",
+		"OwnerUserId",
+		"OwnerUserID",
+		"owner",
+		"Owner",
+	}
+
+	for _, attributeName in ipairs(ownerAttributes) do
+		if ownerValueMatchesLocalPlayer(
+			plot:GetAttribute(attributeName)
+		) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getOwnedPlotPlantsFolder()
+	local gardens = workspace:FindFirstChild("Gardens")
+
+	if not gardens then
+		return nil, nil
+	end
+
+	for _, plot in ipairs(gardens:GetChildren()) do
+		if plot.Name:match("^Plot%d+$")
+			and plotBelongsToLocalPlayer(plot)
+		then
+			local plantsFolder = plot:FindFirstChild("Plants")
+
+			if plantsFolder then
+				return plantsFolder, plot
+			end
+		end
+	end
+
+	return nil, nil
+end
+
+local function getOwnedPlotPlantCount()
+	local plantsFolder = getOwnedPlotPlantsFolder()
+
+	if not plantsFolder then
+		return 0
+	end
+
+	-- Exact requested count:
+	-- Workspace > Gardens > owned Plot[number] > Plants > direct children.
+	return #plantsFolder:GetChildren()
+end
+
 local function getFruitPlantRatio()
 	local fruits = findMoonBloomFruits()
-	local plants = findMoonBloomPlants()
 
 	local goodFruitCount = 0
-	local plantCount = #plants
+	local plantCount = getOwnedPlotPlantCount()
 	local ratio = 0
 
 	for _, fruitData in ipairs(fruits) do
@@ -1172,17 +1252,11 @@ local function getFruitPlantRatio()
 end
 
 local function getCurrentPlantCount()
-	-- Compatibility helper. Automation decisions use the visible-label cache.
-	if displayedRatioPlantCount > 0 then
-		return displayedRatioPlantCount
-	end
-
-	local plants = findMoonBloomPlants()
-	return #plants
+	return getOwnedPlotPlantCount()
 end
 
 local function plantCountRequirementMet()
-	return displayedPlantGatePassed
+	return getOwnedPlotPlantCount() >= MIN_PLANTS_TO_START
 end
 
 
@@ -1905,6 +1979,7 @@ end
 
 local function updateRatioDisplay()
 	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
+	local _, ownedPlot = getOwnedPlotPlantsFolder()
 	local plantStatus = "WAIT"
 
 	displayedRatioGoodFruitCount = goodFruitCount
@@ -1918,13 +1993,14 @@ local function updateRatioDisplay()
 	end
 
 	ratioText.Text = string.format(
-		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]",
+		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s] [%s]",
 		displayedRatioGoodFruitCount,
 		displayedRatioPlantCount,
 		displayedRatioValue * 100,
 		displayedRatioPlantCount,
 		MIN_PLANTS_TO_START,
-		plantStatus
+		plantStatus,
+		ownedPlot and ownedPlot.Name or "NO OWNED PLOT"
 	)
 
 	return
@@ -1953,7 +2029,7 @@ local function applyRatioAutoControl()
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
-				"Visible ratio label plant count too low: " ..
+				"Owned plot Plants child count too low: " ..
 				plantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
@@ -2141,7 +2217,7 @@ toggleButton.MouseButton1Click:Connect(function()
 		waitingForCollection = false
 		updateToggleButton()
 		setStatus(
-			"Cannot start yet. Plants: " ..
+			"Cannot start. Owned plot Plants children: " ..
 			currentPlantCount ..
 			" / " ..
 			MIN_PLANTS_TO_START ..
@@ -2263,7 +2339,7 @@ local function automationLoop()
 			wateredForCurrentCondition = false
 			waitingForCollection = false
 			setStatus(
-				"Visible ratio label plant count below requirement: " ..
+				"Owned plot Plants child count below requirement: " ..
 				activePlantCount ..
 				" / " ..
 				MIN_PLANTS_TO_START ..
