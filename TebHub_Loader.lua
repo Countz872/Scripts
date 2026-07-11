@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.4"
+local TEB_HUB_VERSION = "1.5.5"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -898,6 +898,27 @@ local function getPlantCountDiagnostics()
 end
 
 local function getCurrentPlantCount()
+	-- The Optimizer counter is authoritative because it already produces the
+	-- correct visible Plants count. Bloom must not run a competing scanner.
+	local shared = _G.TEBSharedCounts
+	local optimizerCount =
+		type(shared) == "table"
+		and tonumber(shared.Plants)
+		or nil
+
+	if optimizerCount and optimizerCount >= 0 then
+		optimizerCount = math.floor(optimizerCount)
+
+		if optimizerCount >= MIN_PLANTS_TO_START then
+			lastConfirmedPlantCount = optimizerCount
+			plantCountBelowSince = nil
+		end
+
+		return optimizerCount
+	end
+
+	-- Startup-only fallback in case Bloom is enabled before Optimizer has
+	-- published its first count.
 	local currentCount = getRawCurrentPlantCount()
 
 	if currentCount >= MIN_PLANTS_TO_START then
@@ -906,16 +927,8 @@ local function getCurrentPlantCount()
 		return currentCount
 	end
 
-	-- Do not instantly stop because one or two plants briefly disappear during
-	-- replication/reparenting. Keep the last valid count for six seconds.
 	if lastConfirmedPlantCount >= MIN_PLANTS_TO_START then
-		plantCountBelowSince = plantCountBelowSince or os.clock()
-
-		if os.clock() - plantCountBelowSince
-			< PLANT_COUNT_LOW_GRACE_SECONDS
-		then
-			return lastConfirmedPlantCount
-		end
+		return lastConfirmedPlantCount
 	end
 
 	return currentCount
@@ -1436,32 +1449,22 @@ local function checkKgCondition()
 end
 
 local function getFruitPlantRatio()
-	local fruits = findMoonBloomFruits()
-	local plants = findMoonBloomPlants()
-
-	local goodFruitCount = 0
+	-- Use the same accurate fruit breakdown displayed in Bloom.
+	-- "Good fruits" for the ratio means Good Ripe only:
+	-- fully grown fruits that pass the current KG condition.
+	local _, goodRipeCount = getFullFruitBreakdown()
 	local plantCount = getCurrentPlantCount()
 	local ratio = 0
 
-	for _, fruitData in ipairs(fruits) do
-		-- Important:
-		-- Ratio counts any fruit that PASSES the KG filter, regardless of growth stage.
-		-- Bad KG Moon/Hypno fruits should be collected, so they should NOT count toward stop ratio.
-		if passesKg(fruitData) then
-			goodFruitCount += 1
-		end
-	end
-
 	if plantCount > 0 then
-		ratio = goodFruitCount / plantCount
+		ratio = goodRipeCount / plantCount
 	end
 
-	return goodFruitCount, plantCount, ratio
+	return goodRipeCount, plantCount, ratio
 end
 
 local function plantCountRequirementMet()
-	return plantGateUnlocked
-		or lastDisplayedPlantCount >= MIN_PLANTS_TO_START
+	return getCurrentPlantCount() >= MIN_PLANTS_TO_START
 end
 
 
@@ -1994,47 +1997,10 @@ ratioText.TextXAlignment = Enum.TextXAlignment.Left
 ratioText.Parent = body
 
 local function getPlantGateFromRatioLabel()
-	-- Read only the exact visible ratio label. No plant scan is performed here.
-	local labelText = tostring(ratioText.Text or "")
-
-	local countText =
-		labelText:match("Plants:%s*([%d,]+)%s*/")
-	local requiredText =
-		labelText:match("Plants:%s*[%d,]+%s*/%s*([%d,]+)")
-
-	local displayedCount = tonumber(
-		tostring(countText or "0"):gsub(",", "")
-	) or 0
-
-	local displayedRequired = tonumber(
-		tostring(requiredText or MIN_PLANTS_TO_START):gsub(",", "")
-	) or MIN_PLANTS_TO_START
-
-	local hasOk =
-		labelText:find("[OK]", 1, true) ~= nil
-
-	local hasGateLocked =
-		labelText:find("[GATE LOCKED]", 1, true) ~= nil
-		or labelText:find("[GATELOCKED]", 1, true) ~= nil
-
-	local visibleLabelPassed =
-		(hasOk or hasGateLocked)
-		and displayedCount >= displayedRequired
-		and displayedCount >= MIN_PLANTS_TO_START
-
-	if visibleLabelPassed then
-		plantGateUnlocked = true
-		plantGateUnlockedCount = math.max(
-			plantGateUnlockedCount,
-			displayedCount
-		)
-	end
-
-	if plantGateUnlocked then
-		return math.max(displayedCount, plantGateUnlockedCount), true
-	end
-
-	return displayedCount, false
+	-- Kept under the existing name to avoid disturbing callers.
+	-- The decision now comes directly from the Optimizer's shared counter.
+	local plantCount = getCurrentPlantCount()
+	return plantCount, plantCount >= MIN_PLANTS_TO_START
 end
 
 -- SECTION D: Sprinklers (panel: y=336, height=126)
@@ -2227,30 +2193,23 @@ local function updateFruitDisplay()
 end
 
 local function updateRatioDisplay()
-	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
-	local plantStatus = "WAIT"
+	local goodRipeCount, plantCount, ratio = getFruitPlantRatio()
+	local plantStatus =
+		plantCount >= MIN_PLANTS_TO_START and "OK" or "WAIT"
 
 	lastDisplayedPlantCount = plantCount
 	lastDisplayedPlantCountAt = os.clock()
-
-	if plantCount >= MIN_PLANTS_TO_START then
-		plantStatus = "OK"
-		plantGateUnlocked = true
-		plantGateUnlockedCount = math.max(
-			plantGateUnlockedCount,
-			plantCount
-		)
-	end
+	plantGateUnlocked = plantCount >= MIN_PLANTS_TO_START
+	plantGateUnlockedCount = plantCount
 
 	ratioText.Text = string.format(
-		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]%s",
-		goodFruitCount,
+		"Ratio: %d good ripe / %d plants = %.2f%%\nPlants: %d / %d [%s] [OPTIMIZER]",
+		goodRipeCount,
 		plantCount,
 		ratio * 100,
 		plantCount,
 		MIN_PLANTS_TO_START,
-		plantStatus,
-		plantGateUnlocked and " [GATE LOCKED]" or ""
+		plantStatus
 	)
 end
 
@@ -2263,7 +2222,7 @@ local function applyRatioAutoControl(plantCount)
 		return
 	end
 
-	local goodFruitCount = select(1, getFruitPlantRatio())
+	local _, goodFruitCount = getFullFruitBreakdown()
 	local ratio = 0
 
 	if plantCount > 0 then
@@ -2454,7 +2413,7 @@ toggleButton.MouseButton1Click:Connect(function()
 		updateToggleButton()
 		setStatus(
 			string.format(
-				"Cannot start until the visible label first reaches Plants %d / %d [OK].",
+				"Cannot start until Optimizer reports Plants %d / %d [OK].",
 				currentPlantCount,
 				MIN_PLANTS_TO_START
 			)
@@ -2575,7 +2534,7 @@ local function automationLoop()
 			plantGatePaused = true
 			setStatus(
 				string.format(
-					"Paused: visible label currently says Plants %d / %d [WAIT].",
+					"Paused: Optimizer plant count is %d / %d [WAIT].",
 					displayedPlantCount,
 					MIN_PLANTS_TO_START
 				)
@@ -2588,7 +2547,7 @@ local function automationLoop()
 			plantGatePaused = false
 			setStatus(
 				string.format(
-					"Visible label says Plants %d / %d [OK]. Resuming automation.",
+					"Optimizer plant count is %d / %d [OK]. Resuming automation.",
 					displayedPlantCount,
 					MIN_PLANTS_TO_START
 				)
@@ -7918,6 +7877,14 @@ local function countNow()
 	local lineHeight = 19
 	local listHeight = math.max(24, (#lines * lineHeight) + 8)
 
+	-- Publish the exact same values shown by the working Optimizer UI.
+	-- Bloom reads this shared table instead of maintaining another plant scan.
+	_G.TEBSharedCounts = _G.TEBSharedCounts or {}
+	_G.TEBSharedCounts.Plants = plantCount
+	_G.TEBSharedCounts.Fruits = fruitCount
+	_G.TEBSharedCounts.Mutated = mutatedCount
+	_G.TEBSharedCounts.UpdatedAt = os.clock()
+
 	plantsLabel.Text = "Plants: " .. tostring(plantCount)
 	fruitsLabel.Text = "Fruits: " .. tostring(fruitCount)
 	mutatedLabel.Text = string.format(
@@ -8159,6 +8126,18 @@ _G.TEBHubModules.Optimizer = {
 	end,
 	IsRunning = function()
 		return TEB_OPTIMIZER_ACTIVE == true
+	end,
+	GetPlantCount = function()
+		local shared = _G.TEBSharedCounts
+		return type(shared) == "table"
+			and (tonumber(shared.Plants) or 0)
+			or 0
+	end,
+	GetFruitCount = function()
+		local shared = _G.TEBSharedCounts
+		return type(shared) == "table"
+			and (tonumber(shared.Fruits) or 0)
+			or 0
 	end
 }
 
