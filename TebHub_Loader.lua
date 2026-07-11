@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.0"
+local TEB_HUB_VERSION = "1.5.1"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -262,6 +262,8 @@ local sessionStartHarvestedFruitItemCount = 0
 
 local lastRatioGoodFruitCount = nil
 local lastRatioPlantCount = nil
+local lastDisplayedPlantCount = 0
+local lastDisplayedPlantCountAt = 0
 local lastConfirmedPlantCount = 0
 local plantCountBelowSince = nil
 
@@ -916,6 +918,24 @@ local function getCurrentPlantCount()
 	return currentCount
 end
 
+local function getGatePlantCount()
+	local liveCount = getCurrentPlantCount()
+	local displayedCountIsRecent =
+		lastDisplayedPlantCountAt > 0
+		and (os.clock() - lastDisplayedPlantCountAt) <= 15
+
+	-- When the visible ratio label says 1200 / 1199 [OK], all automation
+	-- gates must honor that exact same count instead of doing another scan
+	-- that can briefly return a wrapper count such as 1 or 2.
+	if displayedCountIsRecent
+		and lastDisplayedPlantCount >= MIN_PLANTS_TO_START
+	then
+		return math.max(liveCount, lastDisplayedPlantCount)
+	end
+
+	return liveCount
+end
+
 local function isFruitFullyGrown(fruit)
 	local age = tonumber(fruit:GetAttribute("Age"))
 	local maxAge = tonumber(fruit:GetAttribute("MaxAge"))
@@ -1437,7 +1457,7 @@ local function getFruitPlantRatio()
 end
 
 local function plantCountRequirementMet()
-	return getCurrentPlantCount() >= MIN_PLANTS_TO_START
+	return getGatePlantCount() >= MIN_PLANTS_TO_START
 end
 
 
@@ -2162,6 +2182,9 @@ local function updateRatioDisplay()
 	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
 	local plantStatus = "WAIT"
 
+	lastDisplayedPlantCount = plantCount
+	lastDisplayedPlantCountAt = os.clock()
+
 	if plantCount >= MIN_PLANTS_TO_START then
 		plantStatus = "OK"
 	end
@@ -2187,24 +2210,23 @@ local function applyRatioAutoControl()
 	end
 
 	local goodFruitCount, plantCount, ratio = getFruitPlantRatio()
+	local gatePlantCount = getGatePlantCount()
+
+	if gatePlantCount ~= plantCount and gatePlantCount > 0 then
+		plantCount = gatePlantCount
+		ratio = goodFruitCount / plantCount
+	end
 
 	if plantCount < MIN_PLANTS_TO_START then
 		if enabled then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
-			local attrCount, seedCount, ownedCount, fallbackCount =
-				getPlantCountDiagnostics()
-
 			setStatus(
 				string.format(
-					"Plant count too low: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+					"Plant count too low: %d / %d. Ratio label count is authoritative.",
 					plantCount,
-					MIN_PLANTS_TO_START,
-					attrCount,
-					seedCount,
-					ownedCount,
-					fallbackCount
+					MIN_PLANTS_TO_START
 				)
 			)
 		end
@@ -2379,25 +2401,20 @@ toggleButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local currentPlantCount = getCurrentPlantCount()
+	-- Refresh the visible ratio snapshot before checking the manual gate.
+	updateRatioDisplay()
+	local currentPlantCount = getGatePlantCount()
 
 	if not enabled and currentPlantCount < MIN_PLANTS_TO_START then
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
 		updateToggleButton()
-		local attrCount, seedCount, ownedCount, fallbackCount =
-			getPlantCountDiagnostics()
-
 		setStatus(
 			string.format(
-				"Cannot start yet. Plants: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+				"Cannot start yet. Plants: %d / %d. Ratio label count is authoritative.",
 				currentPlantCount,
-				MIN_PLANTS_TO_START,
-				attrCount,
-				seedCount,
-				ownedCount,
-				fallbackCount
+				MIN_PLANTS_TO_START
 			)
 		)
 		return
@@ -2513,24 +2530,17 @@ local function automationLoop()
 			continue
 		end
 
-		local activePlantCount = getCurrentPlantCount()
+		local activePlantCount = getGatePlantCount()
 
 		if activePlantCount < MIN_PLANTS_TO_START then
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
-			local attrCount, seedCount, ownedCount, fallbackCount =
-				getPlantCountDiagnostics()
-
 			setStatus(
 				string.format(
-					"Plant count below requirement: %d / %d | attr=%d seed=%d owned=%d fallback=%d",
+					"Plant count below requirement: %d / %d. Ratio label count is authoritative.",
 					activePlantCount,
-					MIN_PLANTS_TO_START,
-					attrCount,
-					seedCount,
-					ownedCount,
-					fallbackCount
+					MIN_PLANTS_TO_START
 				)
 			)
 
