@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.3"
+local TEB_HUB_VERSION = "1.5.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -266,6 +266,7 @@ local lastDisplayedPlantCount = 0
 local lastDisplayedPlantCountAt = 0
 local plantGateUnlocked = false
 local plantGateUnlockedCount = 0
+local plantGatePaused = false
 local lastConfirmedPlantCount = 0
 local plantCountBelowSince = nil
 
@@ -1993,24 +1994,34 @@ ratioText.TextXAlignment = Enum.TextXAlignment.Left
 ratioText.Parent = body
 
 local function getPlantGateFromRatioLabel()
+	-- Read only the exact visible ratio label. No plant scan is performed here.
 	local labelText = tostring(ratioText.Text or "")
-	local displayedCount, displayedRequired, displayedStatus =
-		labelText:match(
-			"Plants:%s*(%d+)%s*/%s*(%d+)%s*%[([^%]]+)%]"
-		)
 
-	displayedCount = tonumber(displayedCount) or 0
-	displayedRequired =
-		tonumber(displayedRequired) or MIN_PLANTS_TO_START
-	displayedStatus = tostring(displayedStatus or ""):upper()
+	local countText =
+		labelText:match("Plants:%s*([%d,]+)%s*/")
+	local requiredText =
+		labelText:match("Plants:%s*[%d,]+%s*/%s*([%d,]+)")
+
+	local displayedCount = tonumber(
+		tostring(countText or "0"):gsub(",", "")
+	) or 0
+
+	local displayedRequired = tonumber(
+		tostring(requiredText or MIN_PLANTS_TO_START):gsub(",", "")
+	) or MIN_PLANTS_TO_START
+
+	local hasOk =
+		labelText:find("[OK]", 1, true) ~= nil
+
+	local hasGateLocked =
+		labelText:find("[GATE LOCKED]", 1, true) ~= nil
+		or labelText:find("[GATELOCKED]", 1, true) ~= nil
 
 	local visibleLabelPassed =
-		displayedStatus == "OK"
+		(hasOk or hasGateLocked)
 		and displayedCount >= displayedRequired
 		and displayedCount >= MIN_PLANTS_TO_START
 
-	-- Once the visible label has shown 1199+ [OK], keep the gate unlocked for
-	-- this script session. Temporary replication dips must not stop Bloom.
 	if visibleLabelPassed then
 		plantGateUnlocked = true
 		plantGateUnlockedCount = math.max(
@@ -2243,7 +2254,7 @@ local function updateRatioDisplay()
 	)
 end
 
-local function applyRatioAutoControl()
+local function applyRatioAutoControl(plantCount)
 	if not masterEnabled then
 		return
 	end
@@ -2252,33 +2263,11 @@ local function applyRatioAutoControl()
 		return
 	end
 
-	-- Read the label already rendered by the main loop. Do not refresh it
-	-- again here, because a second scan can return a temporary low count.
-	local plantCount, plantGatePassed =
-		getPlantGateFromRatioLabel()
-
 	local goodFruitCount = select(1, getFruitPlantRatio())
 	local ratio = 0
 
 	if plantCount > 0 then
 		ratio = goodFruitCount / plantCount
-	end
-
-	if not plantGatePassed then
-		if enabled then
-			enabled = false
-			wateredForCurrentCondition = false
-			waitingForCollection = false
-			setStatus(
-				string.format(
-					"Waiting for the first visible Plants %d / %d [OK].",
-					plantCount,
-					MIN_PLANTS_TO_START
-				)
-			)
-		end
-
-		return
 	end
 
 	if plantCount <= 0 then
@@ -2443,6 +2432,7 @@ toggleButton.MouseButton1Click:Connect(function()
 		enabled = false
 		wateredForCurrentCondition = false
 		waitingForCollection = false
+		plantGatePaused = false
 		updateToggleButton()
 		setStatus("Master is OFF. Turn Master ON before enabling automation.")
 		return
@@ -2475,6 +2465,11 @@ toggleButton.MouseButton1Click:Connect(function()
 	enabled = not enabled
 	wateredForCurrentCondition = false
 	waitingForCollection = false
+
+	if enabled then
+		plantGatePaused = false
+	end
+
 	updateToggleButton()
 	queueCloudSave()
 
@@ -2567,36 +2562,45 @@ local function automationLoop()
 			enabled = false
 			wateredForCurrentCondition = false
 			waitingForCollection = false
+			plantGatePaused = false
 			setStatus("Master OFF. Automation force-stopped.")
 			task.wait(CHECK_DELAY)
 			continue
 		end
 
-		applyRatioAutoControl()
+		local displayedPlantCount, visiblePlantGatePassed =
+			getPlantGateFromRatioLabel()
+
+		if enabled and not visiblePlantGatePassed then
+			plantGatePaused = true
+			setStatus(
+				string.format(
+					"Paused: visible label currently says Plants %d / %d [WAIT].",
+					displayedPlantCount,
+					MIN_PLANTS_TO_START
+				)
+			)
+			task.wait(CHECK_DELAY)
+			continue
+		end
+
+		if visiblePlantGatePassed and plantGatePaused then
+			plantGatePaused = false
+			setStatus(
+				string.format(
+					"Visible label says Plants %d / %d [OK]. Resuming automation.",
+					displayedPlantCount,
+					MIN_PLANTS_TO_START
+				)
+			)
+		end
+
+		applyRatioAutoControl(displayedPlantCount)
 
 		local kgAllowed, totalFruits, passingFruits, kgMessage = checkKgCondition()
 		updateFruitDisplay()
 
 		if not enabled then
-			task.wait(CHECK_DELAY)
-			continue
-		end
-
-		local activePlantCount, plantGatePassed =
-			getPlantGateFromRatioLabel()
-
-		if not plantGatePassed then
-			enabled = false
-			wateredForCurrentCondition = false
-			waitingForCollection = false
-			setStatus(
-				string.format(
-					"Plant gate has not been unlocked yet: Plants %d / %d [WAIT].",
-					activePlantCount,
-					MIN_PLANTS_TO_START
-				)
-			)
-
 			task.wait(CHECK_DELAY)
 			continue
 		end
