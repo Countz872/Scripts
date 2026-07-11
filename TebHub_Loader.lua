@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.5.2"
+local TEB_HUB_VERSION = "1.5.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -264,6 +264,8 @@ local lastRatioGoodFruitCount = nil
 local lastRatioPlantCount = nil
 local lastDisplayedPlantCount = 0
 local lastDisplayedPlantCountAt = 0
+local plantGateUnlocked = false
+local plantGateUnlockedCount = 0
 local lastConfirmedPlantCount = 0
 local plantCountBelowSince = nil
 
@@ -1457,8 +1459,8 @@ local function getFruitPlantRatio()
 end
 
 local function plantCountRequirementMet()
-	-- Compatibility only. Active checks parse the visible ratio label.
-	return lastDisplayedPlantCount >= MIN_PLANTS_TO_START
+	return plantGateUnlocked
+		or lastDisplayedPlantCount >= MIN_PLANTS_TO_START
 end
 
 
@@ -2002,12 +2004,26 @@ local function getPlantGateFromRatioLabel()
 		tonumber(displayedRequired) or MIN_PLANTS_TO_START
 	displayedStatus = tostring(displayedStatus or ""):upper()
 
-	local passed =
+	local visibleLabelPassed =
 		displayedStatus == "OK"
 		and displayedCount >= displayedRequired
 		and displayedCount >= MIN_PLANTS_TO_START
 
-	return displayedCount, passed
+	-- Once the visible label has shown 1199+ [OK], keep the gate unlocked for
+	-- this script session. Temporary replication dips must not stop Bloom.
+	if visibleLabelPassed then
+		plantGateUnlocked = true
+		plantGateUnlockedCount = math.max(
+			plantGateUnlockedCount,
+			displayedCount
+		)
+	end
+
+	if plantGateUnlocked then
+		return math.max(displayedCount, plantGateUnlockedCount), true
+	end
+
+	return displayedCount, false
 end
 
 -- SECTION D: Sprinklers (panel: y=336, height=126)
@@ -2208,16 +2224,22 @@ local function updateRatioDisplay()
 
 	if plantCount >= MIN_PLANTS_TO_START then
 		plantStatus = "OK"
+		plantGateUnlocked = true
+		plantGateUnlockedCount = math.max(
+			plantGateUnlockedCount,
+			plantCount
+		)
 	end
 
 	ratioText.Text = string.format(
-		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]",
+		"Ratio: %d good fruits / %d plants = %.2f%%\nPlants: %d / %d [%s]%s",
 		goodFruitCount,
 		plantCount,
 		ratio * 100,
 		plantCount,
 		MIN_PLANTS_TO_START,
-		plantStatus
+		plantStatus,
+		plantGateUnlocked and " [GATE LOCKED]" or ""
 	)
 end
 
@@ -2230,9 +2252,8 @@ local function applyRatioAutoControl()
 		return
 	end
 
-	-- The visible ratio label is the only authority for the plant gate.
-	updateRatioDisplay()
-
+	-- Read the label already rendered by the main loop. Do not refresh it
+	-- again here, because a second scan can return a temporary low count.
 	local plantCount, plantGatePassed =
 		getPlantGateFromRatioLabel()
 
@@ -2250,7 +2271,7 @@ local function applyRatioAutoControl()
 			waitingForCollection = false
 			setStatus(
 				string.format(
-					"Ratio label did not pass: Plants %d / %d [WAIT].",
+					"Waiting for the first visible Plants %d / %d [OK].",
 					plantCount,
 					MIN_PLANTS_TO_START
 				)
@@ -2427,8 +2448,11 @@ toggleButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	-- Refresh and read the exact visible Plants: X / 1199 [OK] label.
-	updateRatioDisplay()
+	-- Read the exact visible Plants: X / 1199 [OK] label.
+	-- Only populate it once if this is an extremely early click.
+	if not tostring(ratioText.Text):find("Plants:", 1, true) then
+		updateRatioDisplay()
+	end
 
 	local currentPlantCount, plantGatePassed =
 		getPlantGateFromRatioLabel()
@@ -2440,7 +2464,7 @@ toggleButton.MouseButton1Click:Connect(function()
 		updateToggleButton()
 		setStatus(
 			string.format(
-				"Cannot start: ratio label says Plants %d / %d [WAIT].",
+				"Cannot start until the visible label first reaches Plants %d / %d [OK].",
 				currentPlantCount,
 				MIN_PLANTS_TO_START
 			)
@@ -2567,7 +2591,7 @@ local function automationLoop()
 			waitingForCollection = false
 			setStatus(
 				string.format(
-					"Automation stopped because ratio label says Plants %d / %d [WAIT].",
+					"Plant gate has not been unlocked yet: Plants %d / %d [WAIT].",
 					activePlantCount,
 					MIN_PLANTS_TO_START
 				)
