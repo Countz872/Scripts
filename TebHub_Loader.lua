@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.4.3"
+local TEB_HUB_VERSION = "1.4.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2136,6 +2136,10 @@ toggleButton.MouseButton1Click:Connect(function()
 end)
 
 minimizeButton.MouseButton1Click:Connect(function()
+	if _G.TEB_EMBEDDED_MODE == true then
+		return
+	end
+
 	minimized = not minimized
 
 	if minimized then
@@ -3582,6 +3586,10 @@ do
 	local startPos
 
 	topBar.InputBegan:Connect(function(input)
+		if _G.TEB_EMBEDDED_MODE == true then
+			return
+		end
+
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
@@ -3596,6 +3604,11 @@ do
 	end)
 
 	UserInputService.InputChanged:Connect(function(input)
+		if _G.TEB_EMBEDDED_MODE == true then
+			dragging = false
+			return
+		end
+
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			local delta = input.Position - dragStart
 			main.Position = UDim2.new(
@@ -3613,6 +3626,14 @@ local fullSize = main.Size
 local miniSize = UDim2.fromOffset(430, 32)
 
 local function fitMainToScreen()
+	if _G.TEB_EMBEDDED_MODE == true then
+		mainScale.Scale = 1
+		main.AnchorPoint = Vector2.new(0, 0)
+		main.Position = UDim2.fromOffset(0, 0)
+		main.Size = UDim2.fromScale(1, 1)
+		return
+	end
+
 	local camera = workspace.CurrentCamera
 	if not camera then
 		return
@@ -3651,12 +3672,16 @@ task.defer(fitMainToScreen)
 
 task.spawn(function()
 	while running do
-		local camera = workspace.CurrentCamera
-		if camera then
-			camera:GetPropertyChangedSignal("ViewportSize"):Wait()
-			fitMainToScreen()
-		else
+		if _G.TEB_EMBEDDED_MODE == true then
 			task.wait(1)
+		else
+			local camera = workspace.CurrentCamera
+			if camera then
+				camera:GetPropertyChangedSignal("ViewportSize"):Wait()
+				fitMainToScreen()
+			else
+				task.wait(1)
+			end
 		end
 	end
 end)
@@ -3671,6 +3696,10 @@ minimizeButton.MouseButton1Click:Connect(function()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
+	if _G.TEB_EMBEDDED_MODE == true then
+		return
+	end
+
 	running = false
 	gui:Destroy()
 end)
@@ -8554,7 +8583,38 @@ local function normalizeMountedFrame(moduleName, frame)
 
 	local namedTopBar = frame:FindFirstChild("TopBar")
 	if namedTopBar and namedTopBar:IsA("GuiObject") then
-		namedTopBar.Visible = false
+		namedTopBar.Visible = moduleName == "Mailer"
+
+		if moduleName == "Mailer" then
+			namedTopBar.AnchorPoint = Vector2.new(0, 0)
+			namedTopBar.Position = UDim2.fromOffset(0, 0)
+			namedTopBar.Size = UDim2.new(1, 0, 0, 38)
+
+			local titleLabel = namedTopBar:FindFirstChild("Title")
+			if titleLabel and titleLabel:IsA("TextLabel") then
+				titleLabel.Size = UDim2.new(1, -130, 1, 0)
+				titleLabel.TextSize = 15
+			end
+
+			local rescan = namedTopBar:FindFirstChild("Rescan")
+			if rescan and rescan:IsA("TextButton") then
+				rescan.Visible = true
+				rescan.Size = UDim2.fromOffset(112, 28)
+				rescan.Position = UDim2.new(1, -120, 0, 5)
+				rescan.Text = "Rescan Inventory"
+				rescan.TextSize = 11
+			end
+
+			local embeddedMinimize = namedTopBar:FindFirstChild("Minimize")
+			if embeddedMinimize and embeddedMinimize:IsA("GuiObject") then
+				embeddedMinimize.Visible = false
+			end
+
+			local embeddedClose = namedTopBar:FindFirstChild("Close")
+			if embeddedClose and embeddedClose:IsA("GuiObject") then
+				embeddedClose.Visible = false
+			end
+		end
 	end
 
 	if moduleName == "Bloom" then
@@ -8567,12 +8627,16 @@ local function normalizeMountedFrame(moduleName, frame)
 			bloomBody.ClipsDescendants = true
 		end
 	elseif moduleName == "Mailer" then
+		frame.AnchorPoint = Vector2.new(0, 0)
+		frame.Position = UDim2.fromOffset(0, 0)
+		frame.Size = UDim2.fromScale(1, 1)
+
 		local content = frame:FindFirstChild("Content")
 		if content and content:IsA("ScrollingFrame") then
 			content.AnchorPoint = Vector2.new(0, 0)
-			content.Position = UDim2.fromOffset(0, 0)
-			content.Size = UDim2.fromScale(1, 1)
-			content.ScrollBarThickness = 6
+			content.Position = UDim2.fromOffset(8, 44)
+			content.Size = UDim2.new(1, -16, 1, -52)
+			content.ScrollBarThickness = 7
 			content.ClipsDescendants = true
 			content.AutomaticCanvasSize = Enum.AutomaticSize.None
 
@@ -8581,8 +8645,22 @@ local function normalizeMountedFrame(moduleName, frame)
 			end
 		elseif content and content:IsA("GuiObject") then
 			content.AnchorPoint = Vector2.new(0, 0)
-			content.Position = UDim2.fromOffset(0, 0)
-			content.Size = UDim2.fromScale(1, 1)
+			content.Position = UDim2.fromOffset(8, 44)
+			content.Size = UDim2.new(1, -16, 1, -52)
+		end
+
+		-- Improve readability now that the Mailer uses the full hub page.
+		for _, object in ipairs(frame:GetDescendants()) do
+			if object:IsA("TextLabel")
+				or object:IsA("TextButton")
+				or object:IsA("TextBox")
+			then
+				if object.TextSize <= 9 then
+					object.TextSize = 11
+				elseif object.TextSize == 10 then
+					object.TextSize = 12
+				end
+			end
 		end
 	elseif moduleName == "Optimizer" then
 		local content = frame:FindFirstChild("Content")
@@ -8650,6 +8728,13 @@ local function mountModuleUI(moduleName)
 			frame.Position = UDim2.fromOffset(0, 0)
 			frame.Size = UDim2.fromScale(1, 1)
 			frame.ZIndex = 2
+
+			if moduleName == "Mailer" then
+				local scale = frame:FindFirstChild("PhoneFitScale")
+				if scale and scale:IsA("UIScale") then
+					scale.Scale = 1
+				end
+			end
 		end
 	end)
 
