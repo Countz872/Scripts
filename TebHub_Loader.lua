@@ -10,68 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.5"
-_G.TEB_HUB_VERSION = TEB_HUB_VERSION
-
--- Shared 00-7F rolling sequence used by Networking and the raw Mailer.
--- Auto Drop consumes one sequence byte for each RequestPromote packet.
-local packetSequenceCoordinator = {
-	Next = 0x3E,
-	Reset = 0x3E,
-	Last = nil,
-	LastSource = "hub-default",
-	AutoDropConsumed = 0,
-	MailerConsumed = 0,
-	TotalConsumed = 0,
-}
-
-function packetSequenceCoordinator:SetNext(value, resetValue, source)
-	value = tonumber(value)
-	if not value or value < 0 or value > 0x7F then
-		return false, "Sequence must be 00 through 7F."
-	end
-	resetValue = tonumber(resetValue)
-	if not resetValue or resetValue < 0 or resetValue > 0x7F then
-		resetValue = value
-	end
-	self.Next = math.floor(value)
-	self.Reset = math.floor(resetValue)
-	self.Last = nil
-	self.LastSource = tostring(source or "manual-sync")
-	self.AutoDropConsumed = 0
-	self.MailerConsumed = 0
-	self.TotalConsumed = 0
-	return true
-end
-
-function packetSequenceCoordinator:Consume(source)
-	local current = tonumber(self.Next)
-	if current == nil then
-		return nil, "Sequence coordinator is not initialized."
-	end
-	current = math.floor(current)
-	self.Last = current
-	self.LastSource = tostring(source or "unknown")
-	self.TotalConsumed = (tonumber(self.TotalConsumed) or 0) + 1
-	local lowered = self.LastSource:lower()
-	if lowered:find("autodrop", 1, true) then
-		self.AutoDropConsumed = (tonumber(self.AutoDropConsumed) or 0) + 1
-	elseif lowered:find("mailer", 1, true) then
-		self.MailerConsumed = (tonumber(self.MailerConsumed) or 0) + 1
-	end
-	local nextValue = current + 1
-	if nextValue > 0x7F then
-		nextValue = tonumber(self.Reset) or 0
-	end
-	self.Next = nextValue
-	return current
-end
-
-function packetSequenceCoordinator:Peek()
-	return tonumber(self.Next)
-end
-
-_G.TEBPacketSequenceCoordinator = packetSequenceCoordinator
+local TEB_HUB_VERSION = "1.7.6"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -3412,24 +3351,6 @@ local seqCorner = Instance.new("UICorner")
 seqCorner.CornerRadius = UDim.new(0, 6)
 seqCorner.Parent = seqBox
 
-local function syncSharedPacketSequenceFromBox(reason, forceReset)
-	local parsed = parseHexByte(seqBox.Text)
-	local coordinator = _G.TEBPacketSequenceCoordinator
-	if not coordinator then
-		return parsed
-	end
-	local hasConsumed = (tonumber(coordinator.TotalConsumed) or 0) > 0
-	if forceReset or not hasConsumed then
-		local ok, syncError = coordinator:SetNext(parsed, parsed, reason or "mailer-seq-box")
-		if not ok then error(syncError) end
-	end
-	local nextSequence = coordinator:Peek() or parsed
-	seqBox.Text = string.format("%02X", nextSequence)
-	return nextSequence
-end
-
-syncSharedPacketSequenceFromBox("mailer-ui-initialization", false)
-
 local previewButton = Instance.new("TextButton")
 previewButton.Name = "Preview"
 previewButton.Size = UDim2.fromOffset(62, 24)
@@ -6436,44 +6357,20 @@ local function sendPlans(plans, reason)
 		return
 	end
 
-	local configuredPacketByte
+	local packetByte
 	local okSeq, seqErr = pcall(function()
-		configuredPacketByte = parseHexByte(seqBox.Text)
+		packetByte = parseHexByte(seqBox.Text)
 	end)
+
 	if not okSeq then
 		addLog("Bad sequence byte: " .. tostring(seqErr), Color3.fromRGB(255, 120, 120))
 		return
 	end
-	local coordinator = _G.TEBPacketSequenceCoordinator
-	if coordinator and coordinator:Peek() == nil then
-		coordinator:SetNext(configuredPacketByte, configuredPacketByte, "mailer-send-initialization")
-	end
-	local packetByte = coordinator and coordinator:Peek() or configuredPacketByte
-	local packetSequenceResetByte = coordinator and tonumber(coordinator.Reset) or configuredPacketByte
+
+	local packetSequenceResetByte = packetByte
 	local packetSequenceRollovers = 0
-	seqBox.Text = string.format("%02X", packetByte)
-	if debugTrace then
-		debugTrace(string.format(
-			"MAIL SEQUENCE SYNC | configured=%02X | next=%02X | autoDropConsumed=%d | mailerConsumed=%d",
-			configuredPacketByte,
-			packetByte,
-			coordinator and tonumber(coordinator.AutoDropConsumed) or 0,
-			coordinator and tonumber(coordinator.MailerConsumed) or 0
-		))
-	end
 
 	mailing = true
-
-	_G.TEBInventoryOperations =
-		_G.TEBInventoryOperations
-		or {
-			MailerBusy = false,
-			AutoDropBusy = false,
-		}
-
-	-- Mailer gets priority before Auto Drop can begin another fruit.
-	_G.TEBInventoryOperations.MailerBusy = true
-
 	sendButton.Text = "Sending..."
 	addLog(
 		"Starting mail queue with " .. tostring(#plans) .. " plan(s).",
@@ -6482,23 +6379,6 @@ local function sendPlans(plans, reason)
 	prepareProgressRows(plans)
 
 	task.spawn(function()
-		local showedWaitMessage = false
-
-		while mailing
-			and _G.TEBInventoryOperations
-			and _G.TEBInventoryOperations.AutoDropBusy == true
-		do
-			if not showedWaitMessage then
-				showedWaitMessage = true
-				addLog(
-					"Waiting for the current Auto Drop fruit to finish before mailing...",
-					Color3.fromRGB(255, 220, 120)
-				)
-			end
-
-			task.wait(0.05)
-		end
-
 		local ok, err = xpcall(function()
 			local needsCooldownBeforeNextMail = false
 
@@ -6641,32 +6521,33 @@ local function sendPlans(plans, reason)
 							break
 						end
 
-						local recipientByte
-						if coordinator then
-							recipientByte = coordinator:Consume("mailer-recipient")
-						else
-							recipientByte = packetByte
-							packetByte = incrementPacketByte(packetByte, packetSequenceResetByte)
+						local recipientByte = packetByte
+						packetByte = incrementPacketByte(
+							packetByte,
+							packetSequenceResetByte
+						)
+
+						local fruitPacketByte = packetByte
+						local nextPacketByte = incrementPacketByte(
+							packetByte,
+							packetSequenceResetByte
+						)
+
+						if nextPacketByte == packetSequenceResetByte
+							and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE
+						then
+							packetSequenceRollovers += 1
+							addLog(
+								string.format(
+									"Packet sequence rollover #%d: 7F → %02X. Continuing queue.",
+									packetSequenceRollovers,
+									packetSequenceResetByte
+								),
+								Color3.fromRGB(170, 220, 255)
+							)
 						end
-						local fruitPacketByte
-						if coordinator then
-							fruitPacketByte = coordinator:Consume("mailer-fruit")
-							local nextPacketByte = coordinator:Peek()
-							if nextPacketByte == packetSequenceResetByte and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE then
-								packetSequenceRollovers += 1
-								addLog(string.format("Packet sequence rollover #%d: 7F → %02X. Continuing queue.", packetSequenceRollovers, packetSequenceResetByte), Color3.fromRGB(170, 220, 255))
-							end
-							packetByte = nextPacketByte or packetSequenceResetByte
-						else
-							fruitPacketByte = packetByte
-							local nextPacketByte = incrementPacketByte(packetByte, packetSequenceResetByte)
-							if nextPacketByte == packetSequenceResetByte and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE then
-								packetSequenceRollovers += 1
-								addLog(string.format("Packet sequence rollover #%d: 7F → %02X. Continuing queue.", packetSequenceRollovers, packetSequenceResetByte), Color3.fromRGB(170, 220, 255))
-							end
-							packetByte = nextPacketByte
-						end
-						seqBox.Text = string.format("%02X", packetByte)
+
+						packetByte = nextPacketByte
 						local batchValue = getSelectionTotal(batch)
 
 						addLog(string.format("%s mail %d | %d fruit(s) | Base %s | seq %02X/%02X", username, sentMails + 1, #itemKeys, formatShortNumber(batchValue), recipientByte, fruitPacketByte))
@@ -6701,7 +6582,6 @@ local function sendPlans(plans, reason)
 									"MAIL REJECTED | user=" .. tostring(username)
 										.. " | selected=" .. tostring(#batch)
 										.. " | remaining=" .. tostring(#remainingFruits)
-										.. string.format(" | seq=%02X/%02X | next=%02X | autoDropConsumed=%d", recipientByte, fruitPacketByte, tonumber(packetByte) or 0, coordinator and tonumber(coordinator.AutoDropConsumed) or 0)
 								)
 							end
 
@@ -6836,11 +6716,6 @@ local function sendPlans(plans, reason)
 		end
 
 		mailing = false
-
-		if _G.TEBInventoryOperations then
-			_G.TEBInventoryOperations.MailerBusy = false
-		end
-
 		sendButton.Text = "Mail"
 	end)
 end
@@ -6983,9 +6858,6 @@ _G.TEBHubCloudSections.Mailer = {
 
 		if type(data.packetSequence) == "string" or type(data.packetSequence) == "number" then
 			seqBox.Text = tostring(data.packetSequence)
-			local coordinator = _G.TEBPacketSequenceCoordinator
-			local consumed = coordinator and tonumber(coordinator.TotalConsumed) or 0
-			syncSharedPacketSequenceFromBox("mailer-cloud-apply", consumed == 0)
 		end
 
 		local loadedFruitCount = math.floor(tonumber(data.fruitCount) or 0)
@@ -7319,15 +7191,7 @@ updateTargetModeUI()
 updateMailLimitDisplay()
 
 recipientBox.FocusLost:Connect(queueMailerCloudSave)
-seqBox.FocusLost:Connect(function()
-	local ok, syncError = pcall(function()
-		syncSharedPacketSequenceFromBox("mailer-manual-sequence", true)
-	end)
-	if not ok then
-		addLog("Bad sequence byte: " .. tostring(syncError), Color3.fromRGB(255, 120, 120))
-	end
-	queueMailerCloudSave()
-end)
+seqBox.FocusLost:Connect(queueMailerCloudSave)
 
 targetBox:GetPropertyChangedSignal("Text"):Connect(updateTargetFormattedLabel)
 
@@ -7462,7 +7326,7 @@ end)
 		.. "h tracker.",
 	Color3.fromRGB(170, 255, 170)
 )
-debugTrace("TEB Hub version: " .. tostring(_G.TEB_HUB_VERSION or TEB_HUB_VERSION))
+debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
 debugTrace("Local player: " .. tostring(player and player.Name))
 debugTrace("GetUserIdFromNameAsync method: " .. tostring(Players.GetUserIdFromNameAsync))
 debugTrace("Clipboard function available: " .. tostring(type(setclipboard) == "function" or type(toclipboard) == "function"))
@@ -7474,11 +7338,6 @@ _G.TEBHubModules.Mailer = {
 	Stop = function()
 		running = false
 		mailing = false
-
-		if _G.TEBInventoryOperations then
-			_G.TEBInventoryOperations.MailerBusy = false
-		end
-
 		if gui and gui.Parent then
 			gui:Destroy()
 		end
@@ -7486,10 +7345,7 @@ _G.TEBHubModules.Mailer = {
 	IsRunning = function()
 		-- Runtime state is independent from UI visibility or GUI parenting.
 		return running == true
-	end,
-	IsMailing = function()
-		return mailing == true
-	end,
+	end
 }
 
 ]=],
@@ -7511,15 +7367,6 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-
-_G.TEBInventoryOperations =
-	_G.TEBInventoryOperations
-	or {
-		MailerBusy = false,
-		AutoDropBusy = false,
-	}
-
-_G.TEBInventoryOperations.AutoDropBusy = false
 
 -- ============================================================
 -- SETTINGS
@@ -8118,14 +7965,6 @@ local function waitForExactEquip(itemId, timeout)
 	return exactToolIsEquipped(itemId)
 end
 
-local function consumeAutoDropPromotionSequence(source)
-	local coordinator = _G.TEBPacketSequenceCoordinator
-	if not coordinator or type(coordinator.Consume) ~= "function" then
-		return nil
-	end
-	return coordinator:Consume("autodrop-" .. tostring(source or "promote"))
-end
-
 local function promoteAndEquipConfiguration(config)
 	if not config
 		or not config.Parent
@@ -8167,8 +8006,6 @@ local function promoteAndEquipConfiguration(config)
 				"Internal slot Select failed: "
 				.. tostring(selectError)
 		end
-
-		consumeAutoDropPromotionSequence("request-promote-select")
 	else
 		-- Fallback: perform exactly what Select() does.
 		slotIndex =
@@ -8199,8 +8036,6 @@ local function promoteAndEquipConfiguration(config)
 				"RequestPromote failed: "
 				.. tostring(promoteError)
 		end
-
-		consumeAutoDropPromotionSequence("request-promote-direct")
 	end
 
 	local tool =
@@ -8769,53 +8604,6 @@ local function waitForDropCooldown(message, singlePass)
 	end
 end
 
-local function waitForMailerIdle(singlePass)
-	_G.TEBInventoryOperations =
-		_G.TEBInventoryOperations
-		or {
-			MailerBusy = false,
-			AutoDropBusy = false,
-		}
-
-	local showedPauseStatus = false
-
-	while running
-		and _G.TEBInventoryOperations.MailerBusy == true
-	do
-		if not singlePass and not autoDropEnabled then
-			return false
-		end
-
-		if not showedPauseStatus then
-			showedPauseStatus = true
-			setStatus(
-				"Auto Drop paused while Fruit Mailer is sending."
-			)
-		end
-
-		task.wait(0.05)
-	end
-
-	return running
-		and (singlePass or autoDropEnabled)
-end
-
-local function clearAutoDropPending(itemId)
-	if not fruitProxyUtil
-		or type(fruitProxyUtil.Pending) ~= "table"
-	then
-		return
-	end
-
-	if fruitProxyUtil.Pending.Equip == itemId then
-		fruitProxyUtil.Pending.Equip = nil
-	end
-
-	if type(fruitProxyUtil.Pending.Slots) == "table" then
-		fruitProxyUtil.Pending.Slots[itemId] = nil
-	end
-end
-
 local function processQueue(singlePass)
 	if processing then
 		setStatus("A drop queue is already active.")
@@ -8848,10 +8636,6 @@ local function processQueue(singlePass)
 			continue
 		end
 
-		if not waitForMailerIdle(singlePass) then
-			break
-		end
-
 		setStatus(
 			string.format(
 				"%s → Promote/Equip → Drop\n%s",
@@ -8860,21 +8644,7 @@ local function processQueue(singlePass)
 			)
 		)
 
-		_G.TEBInventoryOperations.AutoDropBusy = true
-
-		local callOk, success, message =
-			pcall(dropOneItem, item)
-
-		_G.TEBInventoryOperations.AutoDropBusy = false
-		clearAutoDropPending(item.itemId)
-
-		if not callOk then
-			local runtimeError = success
-			success = false
-			message =
-				"Auto Drop runtime error: "
-				.. tostring(runtimeError)
-		end
+		local success, message = dropOneItem(item)
 
 		if success then
 			droppedCount += 1
@@ -8988,11 +8758,10 @@ copyErrorButton.MouseButton1Click:Connect(function()
 			or tostring(statusLabel.Text)
 		)
 		.. string.format(
-			"\nPromotion method: %s\nSlot: %s\nId: %s\nNext packet sequence: %s",
+			"\nPromotion method: %s\nSlot: %s\nId: %s",
 			lastPromotionMethod,
 			lastPromotionSlot,
-			lastPromotionId,
-			_G.TEBPacketSequenceCoordinator and string.format("%02X", _G.TEBPacketSequenceCoordinator:Peek() or 0) or "<unavailable>"
+			lastPromotionId
 		)
 
 	local copied = false
@@ -9053,12 +8822,6 @@ local function stopAutoDropRuntime()
 	stopped = true
 	running = false
 	autoDropEnabled = false
-
-	if _G.TEBInventoryOperations then
-		_G.TEBInventoryOperations.AutoDropBusy = false
-	end
-
-	clearAutoDropPending(lastPromotionId)
 
 	for _, connection in ipairs(connections) do
 		pcall(function()
@@ -9198,10 +8961,6 @@ _G.TEBHubModules.AutoDrop = {
 			Tools = toolCount,
 			Configurations = configurationCount,
 			DropCooldown = dropCooldown,
-			PausedForMailer =
-				_G.TEBInventoryOperations
-				and _G.TEBInventoryOperations.MailerBusy == true
-				or false,
 		}
 	end,
 }
@@ -10121,13 +9880,6 @@ _G.TEBHubModules.Optimizer = {
 local loadedHubConfig = {}
 local loadedHubSource = "local-startup"
 
--- Shared inventory-operation interlock.
--- Mailer and Auto Drop both mutate harvested-fruit inventory.
-_G.TEBInventoryOperations = _G.TEBInventoryOperations or {
-	MailerBusy = false,
-	AutoDropBusy = false,
-}
-
 local moduleEnabled = {
 	Bloom = false,
 	Mailer = false,
@@ -10145,6 +9897,11 @@ local moduleGuiNames = {
 }
 
 local moduleBusy = {}
+
+-- Mailer and Auto Drop are intentionally mutually exclusive.
+-- This preserves the exact pre–Auto Drop Mailer runtime while Mailer is active.
+local inventoryModuleConflictMessage = nil
+
 local rejoinDelay = 150
 local rejoining = false
 local hubRunning = true
@@ -11226,9 +10983,45 @@ local function refreshModuleVisuals()
 end
 
 local function setModule(name, wanted)
+	inventoryModuleConflictMessage = nil
+
+	if wanted and name == "Mailer" then
+		-- Mailer gets exclusive ownership of harvested-fruit inventory.
+		if moduleEnabled.AutoDrop then
+			stopModule("AutoDrop")
+			clearHost("AutoDrop")
+
+			local autoDropGuiName = moduleGuiNames.AutoDrop
+			local autoDropGui =
+				autoDropGuiName
+				and playerGui:FindFirstChild(autoDropGuiName)
+
+			if autoDropGui then
+				autoDropGui:Destroy()
+			end
+
+			inventoryModuleConflictMessage =
+				"Auto Drop was fully stopped so Mailer can run in stable exclusive mode."
+		end
+	elseif wanted
+		and name == "AutoDrop"
+		and moduleEnabled.Mailer
+	then
+		moduleEnabled.AutoDrop = false
+		refreshModuleVisuals()
+		queueHubCloudSave()
+		setStatus(
+			"Auto Drop cannot start while Mailer is enabled. Disable Mailer first.",
+			true
+		)
+		return
+	end
+
 	if wanted then
 		local oldGuiName = moduleGuiNames[name]
-		local oldStandaloneGui = oldGuiName and playerGui:FindFirstChild(oldGuiName)
+		local oldStandaloneGui =
+			oldGuiName
+			and playerGui:FindFirstChild(oldGuiName)
 
 		if oldStandaloneGui then
 			oldStandaloneGui:Destroy()
@@ -11241,18 +11034,40 @@ local function setModule(name, wanted)
 		if not ok then
 			moduleEnabled[name] = false
 			clearHost(name)
-			setStatus(name .. " failed: " .. tostring(err), true)
+			setStatus(
+				name .. " failed: " .. tostring(err),
+				true
+			)
 		else
-			local mounted, mountError = mountModuleUI(name)
+			local mounted, mountError =
+				mountModuleUI(name)
 
 			if not mounted then
 				stopModule(name)
 				clearHost(name)
 				moduleEnabled[name] = false
-				setStatus(name .. " mount failed: " .. tostring(mountError), true)
+				setStatus(
+					name
+						.. " mount failed: "
+						.. tostring(mountError),
+					true
+				)
 			else
 				moduleEnabled[name] = true
-				setStatus(name .. " enabled inside TEB Hub.")
+
+				if inventoryModuleConflictMessage then
+					setStatus(
+						name
+							.. " enabled. "
+							.. inventoryModuleConflictMessage
+					)
+				else
+					setStatus(
+						name
+							.. " enabled inside TEB Hub."
+					)
+				end
+
 				showPage(name)
 			end
 		end
@@ -11261,6 +11076,7 @@ local function setModule(name, wanted)
 		clearHost(name)
 		setStatus(name .. " stopped.")
 	end
+
 	refreshModuleVisuals()
 	queueHubCloudSave()
 end
@@ -11414,11 +11230,6 @@ closeButton.MouseButton1Click:Connect(function()
 		autoRejoinConnection = nil
 	end
 
-	if _G.TEBInventoryOperations then
-		_G.TEBInventoryOperations.MailerBusy = false
-		_G.TEBInventoryOperations.AutoDropBusy = false
-	end
-
 	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop", "Optimizer"}) do
 		stopModule(name)
 	end
@@ -11432,13 +11243,22 @@ setHubVisible(true)
 sideToggle.Visible = true
 
 task.defer(function()
-	-- Optimizer already started before UI creation. Only optional modules start here.
-	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
+	-- Optimizer already started before UI creation.
+	-- Mailer remains exclusive from Auto Drop during optional-module startup.
+	for _, name in ipairs({"Bloom", "Mailer"}) do
 		if moduleEnabled[name] then
 			local shouldStart = true
 			moduleEnabled[name] = false
 			setModule(name, shouldStart)
 		end
+	end
+
+	if moduleEnabled.AutoDrop
+		and not moduleEnabled.Mailer
+	then
+		local shouldStart = true
+		moduleEnabled.AutoDrop = false
+		setModule("AutoDrop", shouldStart)
 	end
 
 	if moduleEnabled.Optimizer then
@@ -11476,12 +11296,22 @@ task.spawn(function()
 		delayBox.Text = tostring(rejoinDelay)
 	end
 
-	-- Restore Bloom, Mailer, and Auto Drop preferences asynchronously.
-	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
+	-- Restore optional modules asynchronously.
+	-- Mailer has priority over Auto Drop when both were saved enabled.
+	for _, name in ipairs({"Bloom", "Mailer"}) do
 		local wanted = cloudConfig[name] == true
+
 		if wanted ~= moduleEnabled[name] then
 			setModule(name, wanted)
 		end
+	end
+
+	local wantedAutoDrop =
+		cloudConfig.AutoDrop == true
+		and not moduleEnabled.Mailer
+
+	if wantedAutoDrop ~= moduleEnabled.AutoDrop then
+		setModule("AutoDrop", wantedAutoDrop)
 	end
 
 	-- Optimizer remains hardcoded ON. Auto Rejoin starts ON immediately,
