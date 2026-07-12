@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.6.0"
+local TEB_HUB_VERSION = "1.6.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2581,10 +2581,13 @@ local mailerRuntime = {
 	VerifyInterval = 0.35,
 	ServerDailyLimitReached = false,
 	DailyLimitReachedAt = nil,
+	MailWindowStartedAt = nil,
 	PendingLimitResetSave = false,
 	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
 	WatchedLimitText = setmetatable({}, { __mode = "k" }),
 	TargetModeLocked = false,
+	FullBatchOnly = false,
+	FullBatchButton = nil,
 }
 
 -- Your game has a real mail cooldown.
@@ -2624,11 +2627,35 @@ end
 
 local function pruneMailUsage(now)
 	now = tonumber(now) or os.time()
-	local cutoff = now - (mailLimitWindowHours * 3600)
+
+	local windowStart = tonumber(mailerRuntime.MailWindowStartedAt)
+
+	if not windowStart and #mailUsageTimestamps > 0 then
+		table.sort(mailUsageTimestamps)
+		windowStart = tonumber(mailUsageTimestamps[1])
+		mailerRuntime.MailWindowStartedAt = windowStart
+	end
+
+	if windowStart then
+		local expiresAt =
+			windowStart + (mailLimitWindowHours * 3600)
+
+		if now >= expiresAt then
+			table.clear(mailUsageTimestamps)
+			mailerRuntime.MailWindowStartedAt = nil
+			mailerRuntime.ServerDailyLimitReached = false
+			mailerRuntime.DailyLimitReachedAt = nil
+			mailerRuntime.PendingLimitResetSave = true
+			return 0
+		end
+	end
+
 	local kept = {}
 
 	for _, timestamp in ipairs(mailUsageTimestamps) do
-		if tonumber(timestamp) and timestamp > cutoff and timestamp <= now + 300 then
+		timestamp = tonumber(timestamp)
+
+		if timestamp and timestamp <= now + 300 then
 			table.insert(kept, timestamp)
 		end
 	end
@@ -2643,47 +2670,36 @@ local function getMailLimitState()
 	local used = pruneMailUsage(now)
 	local remaining = math.max(0, mailLimitCount - used)
 	local resetIn = 0
+	local windowStart = tonumber(mailerRuntime.MailWindowStartedAt)
 
-	if used > 0 then
+	if windowStart then
 		resetIn = math.max(
 			0,
-			(mailUsageTimestamps[1] + (mailLimitWindowHours * 3600)) - now
+			(windowStart + (mailLimitWindowHours * 3600)) - now
 		)
 	end
 
 	if mailerRuntime.ServerDailyLimitReached then
-		local reachedAt = tonumber(mailerRuntime.DailyLimitReachedAt)
+		remaining = 0
 
-		if reachedAt then
-			local serverResetIn = math.max(
+		if not windowStart then
+			windowStart = tonumber(mailerRuntime.DailyLimitReachedAt) or now
+			mailerRuntime.MailWindowStartedAt = windowStart
+			resetIn = math.max(
 				0,
-				(reachedAt + (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)) - now
+				(windowStart + (mailLimitWindowHours * 3600)) - now
 			)
+		end
 
-			resetIn = math.max(resetIn, serverResetIn)
-
-			if serverResetIn <= 0 then
-				mailerRuntime.ServerDailyLimitReached = false
-				mailerRuntime.DailyLimitReachedAt = nil
-				mailerRuntime.PendingLimitResetSave = true
-
-				used = pruneMailUsage(now)
-				remaining = math.max(0, mailLimitCount - used)
-
-				if used > 0 then
-					resetIn = math.max(
-						0,
-						(mailUsageTimestamps[1]
-							+ (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600))
-							- now
-					)
-				else
-					resetIn = 0
-				end
-			end
-		elseif remaining > 0 then
+		if resetIn <= 0 then
+			table.clear(mailUsageTimestamps)
 			mailerRuntime.ServerDailyLimitReached = false
+			mailerRuntime.DailyLimitReachedAt = nil
+			mailerRuntime.MailWindowStartedAt = nil
 			mailerRuntime.PendingLimitResetSave = true
+			used = 0
+			remaining = mailLimitCount
+			resetIn = 0
 		end
 	end
 
@@ -3417,6 +3433,18 @@ fruitModeButton.TextSize = 10
 fruitModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 fruitModeButton.Parent = content
 
+mailerRuntime.FullBatchButton = Instance.new("TextButton")
+mailerRuntime.FullBatchButton.Name = "FullBatchOnlyCheck"
+mailerRuntime.FullBatchButton.Size = UDim2.fromOffset(96, 24)
+mailerRuntime.FullBatchButton.Position = UDim2.fromOffset(204, 144)
+mailerRuntime.FullBatchButton.BackgroundColor3 = Color3.fromRGB(55, 62, 78)
+mailerRuntime.FullBatchButton.BorderSizePixel = 0
+mailerRuntime.FullBatchButton.Text = "☐ Full 20"
+mailerRuntime.FullBatchButton.Font = Enum.Font.GothamBold
+mailerRuntime.FullBatchButton.TextSize = 10
+mailerRuntime.FullBatchButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+mailerRuntime.FullBatchButton.Parent = content
+
 local fruitCountLabel = Instance.new("TextLabel")
 fruitCountLabel.Size = UDim2.fromOffset(92, 24)
 fruitCountLabel.Position = UDim2.fromOffset(0, 174)
@@ -3456,7 +3484,12 @@ fruitCountHint.TextColor3 = Color3.fromRGB(165, 175, 205)
 fruitCountHint.TextXAlignment = Enum.TextXAlignment.Left
 fruitCountHint.Parent = content
 
-for _, object in ipairs({ valueModeButton, fruitModeButton, fruitCountBox }) do
+for _, object in ipairs({
+	valueModeButton,
+	fruitModeButton,
+	mailerRuntime.FullBatchButton,
+	fruitCountBox,
+}) do
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, 7)
 	c.Parent = object
@@ -5578,6 +5611,24 @@ local function buildFruitMailPacket(itemKeys, packetByte, recipientUserId)
 	return buffer.fromstring(packet)
 end
 
+function mailerRuntime.SplitSendableBatches(fruits)
+	local batches = splitIntoBatches(fruits, MAX_FRUITS_PER_MAIL)
+
+	if not mailerRuntime.FullBatchOnly then
+		return batches
+	end
+
+	local fullBatches = {}
+
+	for _, batch in ipairs(batches) do
+		if #batch == MAX_FRUITS_PER_MAIL then
+			table.insert(fullBatches, batch)
+		end
+	end
+
+	return fullBatches
+end
+
 local function getItemKeysFromBatch(batch)
 	local keys = {}
 
@@ -5932,7 +5983,7 @@ local function makePreview()
 
 		plan.Fruits = selected
 		plan.Total = selectedTotal
-		plan.Batches = splitIntoBatches(selected, MAX_FRUITS_PER_MAIL)
+		plan.Batches = mailerRuntime.SplitSendableBatches(selected)
 		plan.Reason = reason
 		table.insert(previewPlans, plan)
 		totalSelected += selectedTotal
@@ -5954,6 +6005,13 @@ local function makePreview()
 
 	local previewLines = {}
 	local usedMails, remainingMails, resetIn = getMailLimitState()
+
+	if mailerRuntime.FullBatchOnly then
+		table.insert(
+			previewLines,
+			"Full-20 mode: exact batches of 20 only; continuously rescans until full."
+		)
+	end
 
 	table.insert(
 		previewLines,
@@ -6073,6 +6131,62 @@ local function waitForNewMailableFruits(timeoutSeconds)
 	return getCachedFruitsArray(true, true)
 end
 
+function mailerRuntime.WaitForMinimumMailableFruits(
+	minimumCount,
+	timeoutSeconds
+)
+	minimumCount = math.max(1, math.floor(
+		tonumber(minimumCount) or 1
+	))
+
+	local timeout = tonumber(timeoutSeconds)
+	local elapsed = 0
+
+	while mailing
+		and (
+			not timeout
+			or timeout <= 0
+			or elapsed < timeout
+		)
+	do
+		rescanInventoryNow()
+
+		local available = getCachedFruitsArray(true, true)
+
+		if #available >= minimumCount then
+			return available
+		end
+
+		local waitText = "waiting continuously"
+
+		if timeout and timeout > 0 then
+			waitText = string.format(
+				"%ds left",
+				math.max(
+					0,
+					math.floor(timeout - elapsed + 0.5)
+				)
+			)
+		end
+
+		addLog(
+			string.format(
+				"Full-20 mode: %d/%d fruits available. Rescanning; %s.",
+				#available,
+				minimumCount,
+				waitText
+			),
+			Color3.fromRGB(255, 220, 120)
+		)
+
+		task.wait(REFILL_RESCAN_INTERVAL)
+		elapsed += REFILL_RESCAN_INTERVAL
+	end
+
+	rescanInventoryNow()
+	return getCachedFruitsArray(true, true)
+end
+
 local function selectLiveRefillBatch(remainingTarget)
 	rescanInventoryNow()
 
@@ -6083,6 +6197,26 @@ local function selectLiveRefillBatch(remainingTarget)
 	end
 
 	local totalAvailable = getSelectionTotal(available)
+
+	if mailerRuntime.FullBatchOnly then
+		table.sort(available, function(a, b)
+			return (a.baseValue or 0) > (b.baseValue or 0)
+		end)
+
+		if #available < MAX_FRUITS_PER_MAIL then
+			return {}, totalAvailable,
+				string.format(
+					"waiting for full batch: %d/%d fruits",
+					#available,
+					MAX_FRUITS_PER_MAIL
+				)
+		end
+
+		local selected, selectedTotal =
+			takeFruitCount(available, MAX_FRUITS_PER_MAIL)
+
+		return selected, selectedTotal, "full batch of 20 ready"
+	end
 
 	if totalAvailable >= remainingTarget then
 		local selected, selectedTotal, reason = selectClosestAtOrOverTarget(available, remainingTarget)
@@ -6120,6 +6254,22 @@ local function selectLiveFruitBatch(remainingCount)
 	table.sort(available, function(a, b)
 		return (a.baseValue or 0) > (b.baseValue or 0)
 	end)
+
+	if mailerRuntime.FullBatchOnly then
+		if #available < MAX_FRUITS_PER_MAIL then
+			return {}, getSelectionTotal(available),
+				string.format(
+					"waiting for full batch: %d/%d fruits",
+					#available,
+					MAX_FRUITS_PER_MAIL
+				)
+		end
+
+		local selected, selectedTotal =
+			takeFruitCount(available, MAX_FRUITS_PER_MAIL)
+
+		return selected, selectedTotal, "full batch of 20 ready"
+	end
 
 	local amount = math.min(remainingCount, MAX_FRUITS_PER_MAIL, #available)
 	local selected, selectedTotal = takeFruitCount(available, amount)
@@ -6308,15 +6458,36 @@ local function sendPlans(plans, reason)
 						local progressNow = mode == "Fruit" and sentCount or sentTotal
 						local progressTarget = mode == "Fruit" and targetCount or targetValue
 						updateProgressValueRow(username, progressNow, progressTarget, sentMails, "waiting refill", Color3.fromRGB(255, 190, 90))
-						local newAvailable = waitForNewMailableFruits(WAIT_FOR_NEW_FRUITS_SECONDS)
-						if not newAvailable or #newAvailable == 0 then
+						local minimumRequired =
+							mailerRuntime.FullBatchOnly
+							and MAX_FRUITS_PER_MAIL
+							or 1
+
+						local newAvailable
+
+						if mailerRuntime.FullBatchOnly then
+							newAvailable =
+								mailerRuntime.WaitForMinimumMailableFruits(
+									minimumRequired,
+									nil
+								)
+						else
+							newAvailable =
+								waitForNewMailableFruits(
+									WAIT_FOR_NEW_FRUITS_SECONDS
+								)
+						end
+
+						if not newAvailable
+							or #newAvailable < minimumRequired
+						then
 							stoppedReason = "stopped: no new fruits from mail"
 							break
 						end
 						continue
 					end
 
-					for _, batch in ipairs(splitIntoBatches(selected, MAX_FRUITS_PER_MAIL)) do
+					for _, batch in ipairs(mailerRuntime.SplitSendableBatches(selected)) do
 						if not mailing then break end
 
 						local usedNow, remainingNow, resetNow = getMailLimitState()
@@ -6335,6 +6506,20 @@ local function sendPlans(plans, reason)
 						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
 						local itemKeys = getItemKeysFromBatch(batch)
 						if #itemKeys == 0 then stoppedReason = "selected batch had no item keys" break end
+
+						if mailerRuntime.FullBatchOnly
+							and #itemKeys ~= MAX_FRUITS_PER_MAIL
+						then
+							stoppedReason = string.format(
+								"full-20 mode rejected partial batch (%d/20)",
+								#itemKeys
+							)
+							addLog(
+								"Full-20 mode will not send a partial batch. Waiting for inventory refill.",
+								Color3.fromRGB(255, 220, 120)
+							)
+							break
+						end
 
 						local recipientByte = packetByte
 						packetByte = incrementPacketByte(
@@ -6557,7 +6742,7 @@ local function makeSendAllPlans()
 			Username = recipients[1].Username,
 			Fruits = all,
 			Total = getSelectionTotal(all),
-			Batches = splitIntoBatches(all, MAX_FRUITS_PER_MAIL),
+			Batches = mailerRuntime.SplitSendableBatches(all),
 			Reason = "send all",
 			Target = getSelectionTotal(all),
 		})
@@ -6604,7 +6789,7 @@ local function makeSendAllPlans()
 				Username = username,
 				Fruits = selected,
 				Total = selectedTotal,
-				Batches = splitIntoBatches(selected, MAX_FRUITS_PER_MAIL),
+				Batches = mailerRuntime.SplitSendableBatches(selected),
 				Reason = recipient.TargetInput and ("send all split by card target " .. formatShortNumber(recipientTarget)) or "send all split by default target",
 				Target = recipientTarget,
 			})
@@ -6637,7 +6822,9 @@ local function buildMailerCloudSettings()
 		mailLimitCount = mailLimitCount,
 		mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS,
 		mailUsageTimestamps = mailUsageTimestamps,
+		mailWindowStartedAt = mailerRuntime.MailWindowStartedAt,
 		dailyLimitReachedAt = mailerRuntime.DailyLimitReachedAt,
+		fullBatchOnly = mailerRuntime.FullBatchOnly,
 	}
 end
 
@@ -6678,6 +6865,10 @@ _G.TEBHubCloudSections.Mailer = {
 			fruitCountBox.Text = tostring(loadedFruitCount)
 		end
 
+		if type(data.fullBatchOnly) == "boolean" then
+			mailerRuntime.FullBatchOnly = data.fullBatchOnly
+		end
+
 		local loadedLimitCount = math.floor(tonumber(data.mailLimitCount) or 0)
 		if loadedLimitCount > 0 then
 			mailLimitCount = loadedLimitCount
@@ -6690,27 +6881,54 @@ _G.TEBHubCloudSections.Mailer = {
 
 			for _, timestamp in ipairs(data.mailUsageTimestamps) do
 				timestamp = tonumber(timestamp)
+
 				if timestamp then
 					table.insert(mailUsageTimestamps, timestamp)
 				end
 			end
 		end
 
-		local loadedReachedAt = tonumber(data.dailyLimitReachedAt)
 		local loadNow = os.time()
+		local loadedWindowStart =
+			tonumber(data.mailWindowStartedAt)
 
-		if loadedReachedAt
-			and loadedReachedAt <= loadNow + 300
-			and loadNow < loadedReachedAt
+		if not loadedWindowStart
+			and #mailUsageTimestamps > 0
+		then
+			table.sort(mailUsageTimestamps)
+			loadedWindowStart =
+				tonumber(mailUsageTimestamps[1])
+		end
+
+		if loadedWindowStart
+			and loadedWindowStart <= loadNow + 300
+			and loadNow < loadedWindowStart
 				+ (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)
 		then
+			mailerRuntime.MailWindowStartedAt =
+				loadedWindowStart
+		else
+			mailerRuntime.MailWindowStartedAt = nil
+			table.clear(mailUsageTimestamps)
+		end
+
+		local loadedReachedAt =
+			tonumber(data.dailyLimitReachedAt)
+
+		if loadedReachedAt
+			and mailerRuntime.MailWindowStartedAt
+		then
 			mailerRuntime.ServerDailyLimitReached = true
-			mailerRuntime.DailyLimitReachedAt = loadedReachedAt
+			mailerRuntime.DailyLimitReachedAt =
+				loadedReachedAt
 
 			table.clear(mailUsageTimestamps)
 
 			for _ = 1, mailLimitCount do
-				table.insert(mailUsageTimestamps, loadedReachedAt)
+				table.insert(
+					mailUsageTimestamps,
+					mailerRuntime.MailWindowStartedAt
+				)
 			end
 		else
 			mailerRuntime.ServerDailyLimitReached = false
@@ -6746,9 +6964,18 @@ local function updateMailLimitDisplay()
 			formatDuration(resetIn)
 		)
 		mailLimitStatus.TextColor3 = Color3.fromRGB(255, 120, 120)
+	elseif resetIn > 0 then
+		mailLimitStatus.Text = string.format(
+			"%d/%d used | %d left | %s",
+			used,
+			mailLimitCount,
+			remaining,
+			formatDuration(resetIn)
+		)
+		mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
 	else
 		mailLimitStatus.Text = string.format(
-			"%d/%d used | %d left",
+			"%d/%d used | %d left | starts on first gift",
 			used,
 			mailLimitCount,
 			remaining
@@ -6758,9 +6985,24 @@ local function updateMailLimitDisplay()
 end
 
 recordMailUsage = function()
-	table.insert(mailUsageTimestamps, os.time())
-	local used = pruneMailUsage()
-	local remaining = math.max(0, mailLimitCount - used)
+	local now = os.time()
+
+	if not mailerRuntime.MailWindowStartedAt then
+		mailerRuntime.MailWindowStartedAt = now
+		table.clear(mailUsageTimestamps)
+		addLog(
+			"Gift window started from the first verified mail. Reset in 12 hours.",
+			Color3.fromRGB(170, 220, 255)
+		)
+	end
+
+	table.insert(mailUsageTimestamps, now)
+
+	local used = pruneMailUsage(now)
+	local remaining = math.max(
+		0,
+		mailLimitCount - used
+	)
 
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
@@ -6791,12 +7033,19 @@ function mailerRuntime.MarkDailyGiftLimitReached(sourceText)
 	local now = os.time()
 	mailerRuntime.DailyLimitReachedAt = now
 
-	-- A detected server limit starts one fresh 12-hour cooldown from the
-	-- current time. All allowance entries share the same expiry.
+	-- Keep the countdown anchored to the first verified gift.
+	if not mailerRuntime.MailWindowStartedAt then
+		mailerRuntime.MailWindowStartedAt =
+			tonumber(mailUsageTimestamps[1]) or now
+	end
+
 	table.clear(mailUsageTimestamps)
 
 	for _ = 1, mailLimitCount do
-		table.insert(mailUsageTimestamps, now)
+		table.insert(
+			mailUsageTimestamps,
+			mailerRuntime.MailWindowStartedAt
+		)
 	end
 
 	updateMailLimitDisplay()
@@ -6861,6 +7110,19 @@ local function updateTargetModeUI()
 	valueModeButton.BackgroundColor3 = not fruitMode and Color3.fromRGB(45, 115, 65) or Color3.fromRGB(55, 62, 78)
 	fruitModeButton.BackgroundColor3 = fruitMode and Color3.fromRGB(45, 115, 65) or Color3.fromRGB(55, 62, 78)
 
+	mailerRuntime.FullBatchButton.Text =
+		mailerRuntime.FullBatchOnly and "☑ Full 20" or "☐ Full 20"
+
+	mailerRuntime.FullBatchButton.BackgroundColor3 =
+		mailerRuntime.FullBatchOnly
+		and Color3.fromRGB(45, 115, 65)
+		or Color3.fromRGB(55, 62, 78)
+
+	fruitCountHint.Text =
+		mailerRuntime.FullBatchOnly
+		and "exact 20 per mail"
+		or "any harvested fruits"
+
 	-- Keep both target sections visible. The checkbox decides which one is used.
 	targetBox.Visible = true
 	targetFormattedLabel.Visible = true
@@ -6886,6 +7148,22 @@ fruitModeButton.MouseButton1Click:Connect(function()
 	updateTargetModeUI()
 	queueMailerCloudSave()
 	makePreview()
+end)
+
+mailerRuntime.FullBatchButton.MouseButton1Click:Connect(function()
+	mailerRuntime.FullBatchOnly =
+		not mailerRuntime.FullBatchOnly
+
+	updateTargetModeUI()
+	queueMailerCloudSave()
+	makePreview()
+
+	addLog(
+		mailerRuntime.FullBatchOnly
+			and "Full-20 mode ON: only exact batches of 20 will be sent."
+			or "Full-20 mode OFF: partial final batches are allowed.",
+		Color3.fromRGB(170, 220, 255)
+	)
 end)
 
 fruitCountBox.FocusLost:Connect(function()
