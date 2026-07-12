@@ -1,5 +1,5 @@
 -- TEB Hub
--- Combined: Bloom Automation, Fruit Multi-Mailer, Optimization + Counter, Auto Rejoin
+-- Combined: Bloom Automation, Fruit Multi-Mailer, Auto Drop Fruits, Optimization + Counter, Auto Rejoin
 -- Run as one client script.
 
 local Players = game:GetService("Players")
@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.6.2"
+local TEB_HUB_VERSION = "1.7.0"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7349,6 +7349,1541 @@ _G.TEBHubModules.Mailer = {
 }
 
 ]=],
+	AutoDrop = [=[
+-- TEB Hub Auto Drop Fruits module
+-- Based on standalone v2.6 RequestPromote
+-- Exact inventory-controller promotion flow:
+--   FruitProxyUtil.Pending.Slots[id] = slot.Index
+--   FruitProxyUtil.Pending.Equip = id
+--   FruitProxyUtil.RequestPromote(id)
+--
+-- No fake Tool cloning, no packet-sequence guessing, and no remote hooks.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ============================================================
+-- SETTINGS
+-- ============================================================
+
+local DROP_CATEGORY = "HarvestedFruits"
+
+local DEFAULT_DELAY = 0.10
+local PROMOTE_TIMEOUT = 5.0
+local EQUIP_TIMEOUT = 2.5
+local DROP_VERIFY_TIMEOUT = 3.0
+local FAILURE_COOLDOWN = 3.0
+local AUTO_IDLE_DELAY = 0.30
+local MAX_PROMOTE_ATTEMPTS = 2
+
+-- ============================================================
+-- STATE
+-- ============================================================
+
+local running = true
+local processing = false
+local autoDropEnabled = false
+local dropDelay = DEFAULT_DELAY
+
+local remoteEvent = nil
+local fruitProxyUtil = nil
+local dependencyError = nil
+
+local droppedCount = 0
+local failedCount = 0
+local toolCount = 0
+local configurationCount = 0
+
+local failedUntil = {}
+local connections = {}
+
+local lastError = ""
+local lastPromotionMethod = "<none>"
+local lastPromotionSlot = "<none>"
+local lastPromotionId = "<none>"
+
+-- ============================================================
+-- DEPENDENCIES
+-- ============================================================
+
+local function resolveDependencies()
+	if remoteEvent
+		and remoteEvent.Parent
+		and fruitProxyUtil
+	then
+		dependencyError = nil
+		return true
+	end
+
+	local sharedModules =
+		ReplicatedStorage:FindFirstChild("SharedModules")
+
+	if not sharedModules then
+		dependencyError =
+			"ReplicatedStorage.SharedModules was not found."
+		return false
+	end
+
+	local packet =
+		sharedModules:FindFirstChild("Packet")
+	local candidateRemote =
+		packet and packet:FindFirstChild("RemoteEvent")
+	local proxyModule =
+		sharedModules:FindFirstChild("FruitProxyUtil")
+
+	if not candidateRemote
+		or not candidateRemote:IsA("RemoteEvent")
+	then
+		dependencyError =
+			"SharedModules.Packet.RemoteEvent was not found."
+		return false
+	end
+
+	if not proxyModule
+		or not proxyModule:IsA("ModuleScript")
+	then
+		dependencyError =
+			"SharedModules.FruitProxyUtil was not found."
+		return false
+	end
+
+	local ok, moduleResult = pcall(require, proxyModule)
+
+	if not ok then
+		dependencyError =
+			"FruitProxyUtil require failed: "
+			.. tostring(moduleResult)
+		return false
+	end
+
+	if type(moduleResult) ~= "table" then
+		dependencyError =
+			"FruitProxyUtil did not return a table."
+		return false
+	end
+
+	if type(moduleResult.RequestPromote) ~= "function" then
+		dependencyError =
+			"FruitProxyUtil.RequestPromote is unavailable."
+		return false
+	end
+
+	if type(moduleResult.IsFruitProxy) ~= "function"
+		or type(moduleResult.IsFruitTool) ~= "function"
+	then
+		dependencyError =
+			"FruitProxyUtil proxy/tool checks are unavailable."
+		return false
+	end
+
+	if type(moduleResult.Pending) ~= "table" then
+		moduleResult.Pending = {}
+	end
+
+	if type(moduleResult.Pending.Slots) ~= "table" then
+		moduleResult.Pending.Slots = {}
+	end
+
+	remoteEvent = candidateRemote
+	fruitProxyUtil = moduleResult
+	dependencyError = nil
+
+	return true
+end
+
+-- ============================================================
+-- INVENTORY HELPERS
+-- ============================================================
+
+local ID_ATTRIBUTES = {
+	"Id",
+	"ID",
+	"ItemKey",
+	"ItemId",
+	"ItemID",
+	"UUID",
+	"Uuid",
+	"Guid",
+	"GUID",
+}
+
+local function getItemId(instance)
+	if not instance then
+		return nil
+	end
+
+	for _, attributeName in ipairs(ID_ATTRIBUTES) do
+		local value = instance:GetAttribute(attributeName)
+
+		if type(value) == "string"
+			and value ~= ""
+		then
+			return value
+		end
+	end
+
+	return nil
+end
+
+local function harvestedFlagIsTrue(instance)
+	local value =
+		instance and instance:GetAttribute("HarvestedFruit")
+
+	return value == true
+		or value == 1
+		or tostring(value):lower() == "true"
+end
+
+local function getBackpack()
+	return player:FindFirstChildOfClass("Backpack")
+end
+
+local function getCharacter()
+	return player.Character
+end
+
+local function isFruitProxy(instance)
+	if not instance
+		or not instance:IsA("Configuration")
+	then
+		return false
+	end
+
+	if not harvestedFlagIsTrue(instance)
+		or not getItemId(instance)
+	then
+		return false
+	end
+
+	if resolveDependencies() then
+		local ok, result = pcall(
+			fruitProxyUtil.IsFruitProxy,
+			instance
+		)
+
+		if ok then
+			return result == true
+		end
+	end
+
+	return instance:GetAttribute("FruitProxy") == true
+end
+
+local function isFruitTool(instance)
+	if not instance
+		or not instance:IsA("Tool")
+	then
+		return false
+	end
+
+	if not harvestedFlagIsTrue(instance)
+		or not getItemId(instance)
+	then
+		return false
+	end
+
+	if resolveDependencies() then
+		local ok, result = pcall(
+			fruitProxyUtil.IsFruitTool,
+			instance
+		)
+
+		if ok then
+			return result == true
+		end
+	end
+
+	return true
+end
+
+local function findToolById(itemId)
+	local character = getCharacter()
+	local backpack = getBackpack()
+
+	for _, container in ipairs({
+		character,
+		backpack,
+	}) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool")
+					and getItemId(child) == itemId
+				then
+					return child
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+local function findRealFruitToolById(itemId)
+	local tool = findToolById(itemId)
+
+	if tool and isFruitTool(tool) then
+		return tool
+	end
+
+	return nil
+end
+
+local function findConfigurationById(itemId)
+	local backpack = getBackpack()
+
+	if not backpack then
+		return nil
+	end
+
+	for _, child in ipairs(backpack:GetChildren()) do
+		if child:IsA("Configuration")
+			and getItemId(child) == itemId
+		then
+			return child
+		end
+	end
+
+	return nil
+end
+
+local function exactToolIsEquipped(itemId)
+	local character = getCharacter()
+
+	if not character then
+		return false
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool")
+			and getItemId(child) == itemId
+			and isFruitTool(child)
+		then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function itemStillExists(itemId)
+	return findToolById(itemId) ~= nil
+		or findConfigurationById(itemId) ~= nil
+end
+
+local function scanInventory()
+	local tools = {}
+	local configurations = {}
+	local seen = {}
+
+	local character = getCharacter()
+	local backpack = getBackpack()
+
+	for _, container in ipairs({
+		character,
+		backpack,
+	}) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				local itemId = getItemId(child)
+
+				if itemId and not seen[itemId] then
+					if isFruitTool(child) then
+						seen[itemId] = true
+
+						table.insert(tools, {
+							instance = child,
+							itemId = itemId,
+							name = child.Name,
+							kind = "Tool",
+							equipped =
+								character
+								and child.Parent == character,
+						})
+					elseif isFruitProxy(child) then
+						seen[itemId] = true
+
+						table.insert(configurations, {
+							instance = child,
+							itemId = itemId,
+							name = child.Name,
+							kind = "Configuration",
+							equipped = false,
+						})
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(tools, function(a, b)
+		if a.equipped ~= b.equipped then
+			return a.equipped
+		end
+
+		return a.name:lower() < b.name:lower()
+	end)
+
+	table.sort(configurations, function(a, b)
+		return a.name:lower() < b.name:lower()
+	end)
+
+	local items = {}
+
+	for _, item in ipairs(tools) do
+		table.insert(items, item)
+	end
+
+	for _, item in ipairs(configurations) do
+		table.insert(items, item)
+	end
+
+	toolCount = #tools
+	configurationCount = #configurations
+
+	return items
+end
+
+-- ============================================================
+-- EXACT INVENTORY SLOT PROMOTION
+-- ============================================================
+
+local function moveCharacterToolsToBackpack()
+	local character = getCharacter()
+	local backpack = getBackpack()
+
+	if not character or not backpack then
+		return
+	end
+
+	for _, child in ipairs(character:GetChildren()) do
+		if child:IsA("Tool") then
+			pcall(function()
+				child.Parent = backpack
+			end)
+		end
+	end
+end
+
+local function findInternalSlotTable(config)
+	if type(getgc) ~= "function" then
+		return nil
+	end
+
+	local ok, objects = pcall(getgc, true)
+
+	if not ok or type(objects) ~= "table" then
+		return nil
+	end
+
+	for _, object in ipairs(objects) do
+		if type(object) == "table" then
+			local tool = rawget(object, "Tool")
+			local selectFunction = rawget(object, "Select")
+			local index = rawget(object, "Index")
+
+			if tool == config
+				and type(selectFunction) == "function"
+			then
+				return object, tonumber(index)
+			end
+		end
+	end
+
+	return nil
+end
+
+local function pressBackquote()
+	if not VirtualInputManager then
+		return false
+	end
+
+	return pcall(function()
+		VirtualInputManager:SendKeyEvent(
+			true,
+			Enum.KeyCode.Backquote,
+			false,
+			game
+		)
+
+		task.wait(0.035)
+
+		VirtualInputManager:SendKeyEvent(
+			false,
+			Enum.KeyCode.Backquote,
+			false,
+			game
+		)
+	end)
+end
+
+local function textContainsWeight(text, weight)
+	if type(weight) ~= "number" then
+		return false
+	end
+
+	text = tostring(text or ""):lower()
+
+	for _, candidate in ipairs({
+		string.format("%.2f", weight),
+		string.format("%.1f", weight),
+		tostring(math.floor(weight)),
+	}) do
+		if text:find(candidate, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function findRenderedSlotIndex(config)
+	local backpackGui =
+		playerGui:FindFirstChild("BackpackGui")
+
+	if not backpackGui then
+		pressBackquote()
+		task.wait(0.35)
+		backpackGui =
+			playerGui:FindFirstChild("BackpackGui")
+	end
+
+	if not backpackGui then
+		return nil
+	end
+
+	local fruitName = tostring(
+		config:GetAttribute("FruitName")
+			or config:GetAttribute("Fruit")
+			or config.Name
+	)
+	local weight =
+		tonumber(config:GetAttribute("Weight"))
+
+	local candidates = {}
+
+	for _, object in ipairs(backpackGui:GetDescendants()) do
+		if object:IsA("TextLabel")
+			or object:IsA("TextButton")
+			or object:IsA("TextBox")
+		then
+			local text = tostring(object.Text or "")
+			local score = 0
+
+			if text == fruitName then
+				score += 100
+			elseif text:lower():find(
+				fruitName:lower(),
+				1,
+				true
+			) then
+				score += 50
+			end
+
+			if textContainsWeight(text, weight) then
+				score += 80
+			end
+
+			if score > 0 then
+				local current = object
+
+				for _ = 1, 6 do
+					current = current.Parent
+
+					if not current
+						or current == backpackGui
+					then
+						break
+					end
+
+					local numericName =
+						tonumber(current.Name)
+
+					if numericName then
+						candidates[numericName] =
+							(candidates[numericName] or 0)
+							+ score
+						break
+					end
+				end
+			end
+		end
+	end
+
+	local bestIndex = nil
+	local bestScore = -1
+
+	for index, score in pairs(candidates) do
+		if score > bestScore then
+			bestIndex = index
+			bestScore = score
+		end
+	end
+
+	return bestIndex
+end
+
+local function waitForPromotedTool(itemId, timeout)
+	local started = os.clock()
+
+	while running and os.clock() - started < timeout do
+		local tool = findRealFruitToolById(itemId)
+
+		if tool then
+			return tool
+		end
+
+		task.wait(0.04)
+	end
+
+	return findRealFruitToolById(itemId)
+end
+
+local function waitForExactEquip(itemId, timeout)
+	local started = os.clock()
+
+	while running and os.clock() - started < timeout do
+		if exactToolIsEquipped(itemId) then
+			return true
+		end
+
+		task.wait(0.04)
+	end
+
+	return exactToolIsEquipped(itemId)
+end
+
+local function promoteAndEquipConfiguration(config)
+	if not config
+		or not config.Parent
+		or not isFruitProxy(config)
+	then
+		return nil,
+			"Configuration is no longer a live fruit proxy."
+	end
+
+	if not resolveDependencies() then
+		return nil, dependencyError
+	end
+
+	local itemId = getItemId(config)
+
+	if not itemId then
+		return nil, "Configuration has no Id."
+	end
+
+	lastPromotionId = itemId
+	moveCharacterToolsToBackpack()
+	task.wait(0.05)
+
+	-- Best route: invoke the exact internal slot Select() method.
+	local slotTable, slotIndex =
+		findInternalSlotTable(config)
+
+	if slotTable then
+		lastPromotionMethod = "internal-slot-select"
+		lastPromotionSlot =
+			tostring(slotIndex or "<unknown>")
+
+		local ok, selectError = pcall(function()
+			slotTable:Select()
+		end)
+
+		if not ok then
+			return nil,
+				"Internal slot Select failed: "
+				.. tostring(selectError)
+		end
+	else
+		-- Fallback: perform exactly what Select() does.
+		slotIndex =
+			findRenderedSlotIndex(config)
+			or 1
+
+		lastPromotionMethod =
+			"direct-request-promote"
+		lastPromotionSlot = tostring(slotIndex)
+
+		fruitProxyUtil.Pending.Slots[itemId] =
+			slotIndex
+		fruitProxyUtil.Pending.Equip = itemId
+
+		local ok, promoteError = pcall(
+			fruitProxyUtil.RequestPromote,
+			itemId
+		)
+
+		if not ok then
+			fruitProxyUtil.Pending.Slots[itemId] = nil
+
+			if fruitProxyUtil.Pending.Equip == itemId then
+				fruitProxyUtil.Pending.Equip = nil
+			end
+
+			return nil,
+				"RequestPromote failed: "
+				.. tostring(promoteError)
+		end
+	end
+
+	local tool =
+		waitForPromotedTool(itemId, PROMOTE_TIMEOUT)
+
+	if not tool then
+		return nil,
+			string.format(
+				"RequestPromote did not produce a real Tool. Method=%s | Slot=%s | Id=%s",
+				lastPromotionMethod,
+				lastPromotionSlot,
+				itemId
+			)
+	end
+
+	-- Pending.Equip should make InventoryController move the real Tool to the
+	-- Character. If it arrived in Backpack instead, equip the now-server-created
+	-- Tool normally.
+	if not waitForExactEquip(itemId, EQUIP_TIMEOUT) then
+		local character =
+			player.Character or player.CharacterAdded:Wait()
+		local humanoid =
+			character and character:FindFirstChildOfClass("Humanoid")
+
+		if humanoid then
+			pcall(function()
+				humanoid:UnequipTools()
+			end)
+
+			task.wait(0.05)
+
+			pcall(function()
+				humanoid:EquipTool(tool)
+			end)
+		else
+			pcall(function()
+				tool.Parent = character
+			end)
+		end
+	end
+
+	if not waitForExactEquip(itemId, EQUIP_TIMEOUT) then
+		return nil,
+			"Real promoted Tool appeared but did not equip."
+	end
+
+	return findRealFruitToolById(itemId) or tool,
+		"Server promoted and equipped the fruit proxy."
+end
+
+-- ============================================================
+-- NORMAL TOOL EQUIP / DROP
+-- ============================================================
+
+local function equipExistingTool(tool, itemId)
+	if exactToolIsEquipped(itemId) then
+		return true
+	end
+
+	local character =
+		player.Character or player.CharacterAdded:Wait()
+	local humanoid =
+		character and character:FindFirstChildOfClass("Humanoid")
+	local liveTool =
+		findRealFruitToolById(itemId) or tool
+
+	if not humanoid then
+		return false, "Humanoid was not found."
+	end
+
+	if not liveTool or not liveTool.Parent then
+		return false, "Tool disappeared before equip."
+	end
+
+	pcall(function()
+		humanoid:UnequipTools()
+	end)
+
+	task.wait(0.05)
+
+	liveTool =
+		findRealFruitToolById(itemId) or liveTool
+
+	local ok, equipError = pcall(function()
+		humanoid:EquipTool(liveTool)
+	end)
+
+	if not ok then
+		return false,
+			"Humanoid:EquipTool failed: "
+			.. tostring(equipError)
+	end
+
+	if waitForExactEquip(itemId, EQUIP_TIMEOUT) then
+		return true
+	end
+
+	return false, "Existing Tool did not equip."
+end
+
+local function buildDropBuffer(itemId)
+	itemId = tostring(itemId or "")
+
+	if itemId == "" then
+		error("Missing fruit Id.")
+	end
+
+	return buffer.fromstring(
+		string.char(
+			0x3B,
+			0x01,
+			#DROP_CATEGORY
+		)
+		.. DROP_CATEGORY
+		.. string.char(#itemId)
+		.. itemId
+	)
+end
+
+local function fireDrop(itemId)
+	if not resolveDependencies() then
+		return false, dependencyError
+	end
+
+	local ok, err = pcall(function()
+		remoteEvent:FireServer(
+			buildDropBuffer(itemId)
+		)
+	end)
+
+	if not ok then
+		return false,
+			"Drop remote failed: "
+			.. tostring(err)
+	end
+
+	return true
+end
+
+local function waitForItemRemoval(itemId, timeout)
+	local started = os.clock()
+
+	while running and os.clock() - started < timeout do
+		if not itemStillExists(itemId) then
+			return true
+		end
+
+		task.wait(0.05)
+	end
+
+	return not itemStillExists(itemId)
+end
+
+local function dropOneItem(item)
+	local itemId = item.itemId
+	local tool = findRealFruitToolById(itemId)
+
+	if not tool then
+		local config =
+			findConfigurationById(itemId)
+
+		if not config then
+			return false,
+				"No live Tool or Configuration was found."
+		end
+
+		for attempt = 1, MAX_PROMOTE_ATTEMPTS do
+			local promoted, promoteMessage =
+				promoteAndEquipConfiguration(config)
+
+			if promoted then
+				tool = promoted
+				break
+			end
+
+			lastError = promoteMessage
+
+			if attempt < MAX_PROMOTE_ATTEMPTS then
+				task.wait(0.30)
+				config =
+					findConfigurationById(itemId)
+
+				if not config then
+					tool =
+						findRealFruitToolById(itemId)
+					break
+				end
+			end
+		end
+
+		if not tool then
+			return false, lastError
+		end
+	else
+		local equipped, equipMessage =
+			equipExistingTool(tool, itemId)
+
+		if not equipped then
+			return false, equipMessage
+		end
+	end
+
+	if not exactToolIsEquipped(itemId) then
+		local equipped, equipMessage =
+			equipExistingTool(tool, itemId)
+
+		if not equipped then
+			return false, equipMessage
+		end
+	end
+
+	task.wait(0.08)
+
+	local sent, sendMessage = fireDrop(itemId)
+
+	if not sent then
+		return false, sendMessage
+	end
+
+	if waitForItemRemoval(
+		itemId,
+		DROP_VERIFY_TIMEOUT
+	) then
+		return true,
+			"Dropped " .. tostring(item.name) .. "."
+	end
+
+	return false,
+		string.format(
+			"Drop packet was sent but the promoted Tool remained. Method=%s | Slot=%s | Id=%s",
+			lastPromotionMethod,
+			lastPromotionSlot,
+			itemId
+		)
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+
+local oldGui =
+	playerGui:FindFirstChild(
+		"RequestPromoteAutoDropUI"
+	)
+
+if oldGui then
+	oldGui:Destroy()
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "RequestPromoteAutoDropUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local main = Instance.new("Frame")
+main.Name = "MainFrame"
+main.Size = UDim2.fromOffset(330, 250)
+main.Position = UDim2.fromOffset(14, 80)
+main.BackgroundColor3 = Color3.fromRGB(21, 23, 30)
+main.BorderSizePixel = 0
+main.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 9)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(90, 140, 235)
+mainStroke.Transparency = 0.25
+mainStroke.Thickness = 1.2
+mainStroke.Parent = main
+
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 34)
+topBar.BackgroundColor3 = Color3.fromRGB(42, 55, 86)
+topBar.BorderSizePixel = 0
+topBar.Parent = main
+
+local topCorner = Instance.new("UICorner")
+topCorner.CornerRadius = UDim.new(0, 9)
+topCorner.Parent = topBar
+
+local topCover = Instance.new("Frame")
+topCover.Size = UDim2.new(1, 0, 0, 9)
+topCover.Position = UDim2.new(0, 0, 1, -9)
+topCover.BackgroundColor3 = topBar.BackgroundColor3
+topCover.BorderSizePixel = 0
+topCover.Parent = topBar
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -42, 1, 0)
+title.Position = UDim2.fromOffset(10, 0)
+title.BackgroundTransparency = 1
+title.Text = "Auto Drop Fruits — RequestPromote"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 12
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = topBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.fromOffset(26, 22)
+closeButton.Position = UDim2.new(1, -30, 0, 6)
+closeButton.BackgroundColor3 = Color3.fromRGB(145, 55, 65)
+closeButton.BorderSizePixel = 0
+closeButton.Text = "×"
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextSize = 16
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.Parent = topBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 5)
+closeCorner.Parent = closeButton
+
+local body = Instance.new("Frame")
+body.Name = "Content"
+body.Size = UDim2.new(1, -16, 1, -44)
+body.Position = UDim2.fromOffset(8, 40)
+body.BackgroundTransparency = 1
+body.Parent = main
+
+local inventoryLabel = Instance.new("TextLabel")
+inventoryLabel.Size = UDim2.new(1, 0, 0, 21)
+inventoryLabel.BackgroundTransparency = 1
+inventoryLabel.Text = "Tools: 0 | Configurations: 0"
+inventoryLabel.Font = Enum.Font.GothamBold
+inventoryLabel.TextSize = 11
+inventoryLabel.TextColor3 = Color3.fromRGB(190, 220, 255)
+inventoryLabel.TextXAlignment = Enum.TextXAlignment.Left
+inventoryLabel.Parent = body
+
+local statsLabel = Instance.new("TextLabel")
+statsLabel.Size = UDim2.new(1, 0, 0, 19)
+statsLabel.Position = UDim2.fromOffset(0, 21)
+statsLabel.BackgroundTransparency = 1
+statsLabel.Text = "Dropped: 0 | Failed: 0"
+statsLabel.Font = Enum.Font.Code
+statsLabel.TextSize = 10
+statsLabel.TextColor3 = Color3.fromRGB(210, 210, 220)
+statsLabel.TextXAlignment = Enum.TextXAlignment.Left
+statsLabel.Parent = body
+
+local autoButton = Instance.new("TextButton")
+autoButton.Size = UDim2.fromOffset(150, 32)
+autoButton.Position = UDim2.fromOffset(0, 46)
+autoButton.BackgroundColor3 = Color3.fromRGB(125, 50, 55)
+autoButton.BorderSizePixel = 0
+autoButton.Text = "Auto Drop: OFF"
+autoButton.Font = Enum.Font.GothamBold
+autoButton.TextSize = 11
+autoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoButton.Parent = body
+
+local dropAllButton = Instance.new("TextButton")
+dropAllButton.Size = UDim2.fromOffset(150, 32)
+dropAllButton.Position = UDim2.fromOffset(164, 46)
+dropAllButton.BackgroundColor3 = Color3.fromRGB(50, 105, 165)
+dropAllButton.BorderSizePixel = 0
+dropAllButton.Text = "Drop All Now"
+dropAllButton.Font = Enum.Font.GothamBold
+dropAllButton.TextSize = 11
+dropAllButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+dropAllButton.Parent = body
+
+local rescanButton = Instance.new("TextButton")
+rescanButton.Size = UDim2.fromOffset(94, 28)
+rescanButton.Position = UDim2.fromOffset(0, 86)
+rescanButton.BackgroundColor3 = Color3.fromRGB(62, 68, 84)
+rescanButton.BorderSizePixel = 0
+rescanButton.Text = "Rescan"
+rescanButton.Font = Enum.Font.GothamBold
+rescanButton.TextSize = 10
+rescanButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+rescanButton.Parent = body
+
+local copyErrorButton = Instance.new("TextButton")
+copyErrorButton.Size = UDim2.fromOffset(108, 28)
+copyErrorButton.Position = UDim2.fromOffset(102, 86)
+copyErrorButton.BackgroundColor3 = Color3.fromRGB(82, 67, 112)
+copyErrorButton.BorderSizePixel = 0
+copyErrorButton.Text = "Copy Error"
+copyErrorButton.Font = Enum.Font.GothamBold
+copyErrorButton.TextSize = 10
+copyErrorButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+copyErrorButton.Parent = body
+
+local delayBox = Instance.new("TextBox")
+delayBox.Size = UDim2.fromOffset(96, 28)
+delayBox.Position = UDim2.fromOffset(218, 86)
+delayBox.BackgroundColor3 = Color3.fromRGB(43, 47, 60)
+delayBox.BorderSizePixel = 0
+delayBox.Text = tostring(dropDelay)
+delayBox.PlaceholderText = "Delay"
+delayBox.ClearTextOnFocus = false
+delayBox.Font = Enum.Font.Code
+delayBox.TextSize = 10
+delayBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+delayBox.Parent = body
+
+for _, object in ipairs({
+	autoButton,
+	dropAllButton,
+	rescanButton,
+	copyErrorButton,
+	delayBox,
+}) do
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = object
+end
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, 0, 0, 82)
+statusLabel.Position = UDim2.fromOffset(0, 122)
+statusLabel.BackgroundColor3 = Color3.fromRGB(29, 32, 42)
+statusLabel.BorderSizePixel = 0
+statusLabel.Text =
+	"Ready. Configurations use the game's RequestPromote flow."
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextSize = 10
+statusLabel.TextColor3 = Color3.fromRGB(205, 235, 205)
+statusLabel.TextWrapped = true
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+statusLabel.Parent = body
+
+local statusPadding = Instance.new("UIPadding")
+statusPadding.PaddingTop = UDim.new(0, 6)
+statusPadding.PaddingBottom = UDim.new(0, 6)
+statusPadding.PaddingLeft = UDim.new(0, 7)
+statusPadding.PaddingRight = UDim.new(0, 7)
+statusPadding.Parent = statusLabel
+
+local statusCorner = Instance.new("UICorner")
+statusCorner.CornerRadius = UDim.new(0, 6)
+statusCorner.Parent = statusLabel
+
+local function setStatus(message, isError)
+	statusLabel.Text = tostring(message)
+	statusLabel.TextColor3 =
+		isError
+		and Color3.fromRGB(255, 150, 150)
+		or Color3.fromRGB(205, 235, 205)
+end
+
+local function updateUi()
+	inventoryLabel.Text = string.format(
+		"Tools: %d | Configurations: %d",
+		toolCount,
+		configurationCount
+	)
+
+	statsLabel.Text = string.format(
+		"Dropped: %d | Failed: %d",
+		droppedCount,
+		failedCount
+	)
+
+	autoButton.Text =
+		autoDropEnabled
+		and "Auto Drop: ON"
+		or "Auto Drop: OFF"
+
+	autoButton.BackgroundColor3 =
+		autoDropEnabled
+		and Color3.fromRGB(45, 125, 65)
+		or Color3.fromRGB(125, 50, 55)
+end
+
+local function refreshCounts()
+	local items = scanInventory()
+	updateUi()
+	return items
+end
+
+-- ============================================================
+-- TEB HUB CLOUD SETTINGS
+-- ============================================================
+
+local function buildAutoDropCloudSettings()
+	return {
+		version = 1,
+		autoDropEnabled = autoDropEnabled,
+		dropDelay = dropDelay,
+	}
+end
+
+local function queueAutoDropCloudSave()
+	if type(_G.TEBCloudQueueSaveScope) == "function" then
+		_G.TEBCloudQueueSaveScope(
+			"autodrop",
+			buildAutoDropCloudSettings
+		)
+	end
+end
+
+-- ============================================================
+-- QUEUE
+-- ============================================================
+
+local function getNextReadyItem()
+	local items = refreshCounts()
+	local now = os.clock()
+
+	for _, item in ipairs(items) do
+		local blockedUntil =
+			tonumber(failedUntil[item.itemId]) or 0
+
+		if blockedUntil <= now then
+			failedUntil[item.itemId] = nil
+			return item, items
+		end
+	end
+
+	return nil, items
+end
+
+local function processQueue(singlePass)
+	if processing then
+		setStatus("A drop queue is already active.")
+		return
+	end
+
+	processing = true
+
+	while running and (singlePass or autoDropEnabled) do
+		local item, items = getNextReadyItem()
+
+		if not item then
+			if #items > 0 then
+				setStatus(
+					"Remaining items are cooling down. Retrying..."
+				)
+				task.wait(0.30)
+				continue
+			end
+
+			if singlePass then
+				setStatus("Drop pass finished. No fruits remain.")
+				break
+			end
+
+			setStatus(
+				"Auto Drop active. Waiting for fruits..."
+			)
+			task.wait(AUTO_IDLE_DELAY)
+			continue
+		end
+
+		setStatus(
+			string.format(
+				"%s → Promote/Equip → Drop\n%s",
+				item.kind,
+				item.name
+			)
+		)
+
+		local success, message = dropOneItem(item)
+
+		if success then
+			droppedCount += 1
+			failedUntil[item.itemId] = nil
+			setStatus(message)
+		else
+			failedCount += 1
+			failedUntil[item.itemId] =
+				os.clock() + FAILURE_COOLDOWN
+			lastError = tostring(message)
+			setStatus(message, true)
+		end
+
+		refreshCounts()
+		task.wait(dropDelay)
+	end
+
+	processing = false
+	refreshCounts()
+
+	if running and autoDropEnabled then
+		task.defer(function()
+			processQueue(false)
+		end)
+	end
+end
+
+local function applyAutoDropCloudSettings(data)
+	if type(data) ~= "table" then
+		return false
+	end
+
+	local savedDelay = tonumber(data.dropDelay)
+	if savedDelay then
+		dropDelay = math.clamp(savedDelay, 0.03, 10)
+		delayBox.Text = tostring(dropDelay)
+	end
+
+	local wantedAuto = data.autoDropEnabled == true
+	autoDropEnabled = wantedAuto
+	updateUi()
+
+	if wantedAuto and running and not processing then
+		task.spawn(function()
+			processQueue(false)
+		end)
+	end
+
+	return true
+end
+
+autoButton.MouseButton1Click:Connect(function()
+	autoDropEnabled = not autoDropEnabled
+	updateUi()
+	queueAutoDropCloudSave()
+
+	if autoDropEnabled then
+		setStatus(
+			"Auto Drop enabled. Using RequestPromote for Configurations..."
+		)
+
+		task.spawn(function()
+			processQueue(false)
+		end)
+	else
+		setStatus("Auto Drop disabled.")
+	end
+end)
+
+dropAllButton.MouseButton1Click:Connect(function()
+	task.spawn(function()
+		processQueue(true)
+	end)
+end)
+
+rescanButton.MouseButton1Click:Connect(function()
+	local items = refreshCounts()
+
+	setStatus(
+		string.format(
+			"Rescan complete: %d unique fruit item(s).",
+			#items
+		)
+	)
+end)
+
+copyErrorButton.MouseButton1Click:Connect(function()
+	local value =
+		(
+			lastError ~= ""
+			and lastError
+			or tostring(statusLabel.Text)
+		)
+		.. string.format(
+			"\nPromotion method: %s\nSlot: %s\nId: %s",
+			lastPromotionMethod,
+			lastPromotionSlot,
+			lastPromotionId
+		)
+
+	local copied = false
+
+	if type(setclipboard) == "function" then
+		setclipboard(value)
+		copied = true
+	elseif type(toclipboard) == "function" then
+		toclipboard(value)
+		copied = true
+	end
+
+	setStatus(
+		copied
+			and "Latest error/status copied."
+			or "Clipboard is unavailable.",
+		not copied
+	)
+end)
+
+delayBox.FocusLost:Connect(function()
+	local value = tonumber(delayBox.Text)
+
+	if value and value >= 0.03 and value <= 10 then
+		dropDelay = value
+		delayBox.Text = tostring(dropDelay)
+		queueAutoDropCloudSave()
+		setStatus(
+			"Drop delay set to "
+				.. tostring(dropDelay)
+				.. " seconds."
+		)
+	else
+		delayBox.Text = tostring(dropDelay)
+		setStatus(
+			"Delay must be between 0.03 and 10 seconds.",
+			true
+		)
+	end
+end)
+
+local stopped = false
+
+local function stopAutoDropRuntime()
+	if stopped then
+		return
+	end
+
+	stopped = true
+	running = false
+	autoDropEnabled = false
+
+	for _, connection in ipairs(connections) do
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+
+	if gui and gui.Parent then
+		gui:Destroy()
+	end
+end
+
+closeButton.MouseButton1Click:Connect(stopAutoDropRuntime)
+
+-- Draggable UI.
+local dragging = false
+local dragStart = nil
+local startPosition = nil
+
+topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+	then
+		dragging = true
+		dragStart = input.Position
+		startPosition = main.Position
+	end
+end)
+
+topBar.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+	then
+		dragging = false
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not dragging then
+		return
+	end
+
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+		and input.UserInputType ~= Enum.UserInputType.Touch
+	then
+		return
+	end
+
+	local delta = input.Position - dragStart
+
+	main.Position = UDim2.new(
+		startPosition.X.Scale,
+		startPosition.X.Offset + delta.X,
+		startPosition.Y.Scale,
+		startPosition.Y.Offset + delta.Y
+	)
+end)
+
+local function watchContainer(container)
+	if not container then
+		return
+	end
+
+	table.insert(
+		connections,
+		container.ChildAdded:Connect(function(child)
+			if child:IsA("Tool")
+				or child:IsA("Configuration")
+			then
+				task.defer(refreshCounts)
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		container.ChildRemoved:Connect(function(child)
+			if child:IsA("Tool")
+				or child:IsA("Configuration")
+			then
+				task.defer(refreshCounts)
+			end
+		end)
+	)
+end
+
+task.defer(function()
+	local backpack =
+		getBackpack()
+		or player:WaitForChild("Backpack", 10)
+
+	watchContainer(backpack)
+	watchContainer(player.Character)
+
+	table.insert(
+		connections,
+		player.CharacterAdded:Connect(function(character)
+			task.wait(0.20)
+			watchContainer(character)
+			refreshCounts()
+		end)
+	)
+
+	local ready = resolveDependencies()
+	refreshCounts()
+
+	if ready then
+		setStatus(
+			"Ready. RequestPromote and Pending.Equip are connected."
+		)
+	else
+		setStatus(
+			"UI ready, but dependency check failed: "
+				.. tostring(dependencyError),
+			true
+		)
+	end
+end)
+
+
+-- TEB Hub lifecycle and cloud bridge.
+_G.TEBHubModules = _G.TEBHubModules or {}
+_G.TEBHubModules.AutoDrop = {
+	Stop = stopAutoDropRuntime,
+	IsRunning = function()
+		return running == true and stopped ~= true
+	end,
+	GetStatus = function()
+		return {
+			AutoDropEnabled = autoDropEnabled,
+			Processing = processing,
+			Dropped = droppedCount,
+			Failed = failedCount,
+			Tools = toolCount,
+			Configurations = configurationCount,
+		}
+	end,
+}
+
+_G.TEBHubCloudSections = _G.TEBHubCloudSections or {}
+_G.TEBHubCloudSections.AutoDrop = {
+	Get = buildAutoDropCloudSettings,
+	Apply = applyAutoDropCloudSettings,
+}
+
+]=],
 	Optimizer = [=[
 local TEB_OPTIMIZER_ACTIVE = true
 --// Combined Optimization Script + Lightweight Plant/Fruit Counter UI
@@ -8260,6 +9795,7 @@ local loadedHubSource = "local-startup"
 local moduleEnabled = {
 	Bloom = false,
 	Mailer = false,
+	AutoDrop = false,
 	Optimizer = true,
 	AutoRejoin = true,
 }
@@ -8268,6 +9804,7 @@ local moduleEnabled = {
 local moduleGuiNames = {
 	Bloom = "BloomAutomationUI",
 	Mailer = "CompactFruitMultiMailer",
+	AutoDrop = "RequestPromoteAutoDropUI",
 	Optimizer = "PlantFruitCounterUI",
 }
 
@@ -8285,6 +9822,7 @@ local function buildHubCloudSettings()
 		hubVersion = TEB_HUB_VERSION,
 		Bloom = moduleEnabled.Bloom,
 		Mailer = moduleEnabled.Mailer,
+		AutoDrop = moduleEnabled.AutoDrop,
 		Optimizer = moduleEnabled.Optimizer,
 		AutoRejoin = moduleEnabled.AutoRejoin,
 		RejoinDelay = rejoinDelay,
@@ -8354,6 +9892,7 @@ local function executeModule(name)
 			task.spawn(function()
 				local scope = name == "Bloom" and "bloom"
 					or name == "Mailer" and "mailer"
+					or name == "AutoDrop" and "autodrop"
 					or nil
 
 				if not scope or type(_G.TEBCloudLoadScope) ~= "function" then
@@ -8742,6 +10281,7 @@ local pageMeta = {
 	Dashboard = {"Dashboard", "Manage all TEB Hub modules from one place."},
 	Bloom = {"Bloom Automation", "Configure watering, KG filters, ratios, sprinklers, and cans."},
 	Mailer = {"Fruit Multi-Mailer", "Send by value or fruit quantity while tracking total values."},
+	AutoDrop = {"Auto Drop Fruits", "Promote inventory fruit proxies, equip them, and drop them automatically."},
 	Optimizer = {"Optimization + Counter", "Reduce visual load and monitor plant and fruit counts."},
 	Rejoin = {"Auto Rejoin", "Automatically reconnect after a connection error."},
 	Settings = {"Cloud & Defaults", "Manage UserId cloud settings and global defaults."},
@@ -8758,7 +10298,7 @@ local function createPage(name)
 	return page
 end
 
-for _, name in ipairs({"Dashboard", "Bloom", "Mailer", "Optimizer", "Rejoin", "Settings"}) do
+for _, name in ipairs({"Dashboard", "Bloom", "Mailer", "AutoDrop", "Optimizer", "Rejoin", "Settings"}) do
 	createPage(name)
 end
 
@@ -8785,9 +10325,10 @@ end
 makeNavButton("Dashboard", "Dashboard", 1)
 makeNavButton("Bloom", "Bloom Automation", 2)
 makeNavButton("Mailer", "Fruit Mailer", 3)
-makeNavButton("Optimizer", "Optimizer", 4)
-makeNavButton("Rejoin", "Auto Rejoin", 5)
-makeNavButton("Settings", "Cloud & Defaults", 6)
+makeNavButton("AutoDrop", "Auto Drop Fruits", 4)
+makeNavButton("Optimizer", "Optimizer", 5)
+makeNavButton("Rejoin", "Auto Rejoin", 6)
+makeNavButton("Settings", "Cloud & Defaults", 7)
 
 local currentPage = "Dashboard"
 
@@ -8969,6 +10510,7 @@ end
 
 makeModuleCard("Bloom", "Bloom Automation", "Automated watering with KG and ratio controls.")
 makeModuleCard("Mailer", "Fruit Multi-Mailer", "Value-based and fruit-count-based mailing.")
+makeModuleCard("AutoDrop", "Auto Drop Fruits", "Server-approved RequestPromote equip and automatic fruit dropping.")
 makeModuleCard("Optimizer", "Optimization + Counter", "Visual cleanup and live plant/fruit counts.")
 makeModuleCard("AutoRejoin", "Auto Rejoin", "Reconnect automatically after connection errors.")
 
@@ -9019,6 +10561,7 @@ end
 
 createModuleShell("Bloom", "Bloom", "All Bloom controls and statistics appear in this page.")
 createModuleShell("Mailer", "Mailer", "Mailer history, targets, and progress remain inside this page.")
+createModuleShell("AutoDrop", "AutoDrop", "Uses the game's RequestPromote flow; disabling safely stops the drop queue.")
 createModuleShell("Optimizer", "Optimizer", "Disabling stops future processing; deleted visuals cannot be restored.")
 
 -- Rejoin page
@@ -9235,6 +10778,13 @@ local function normalizeMountedFrame(moduleName, frame)
 				end
 			end
 		end
+	elseif moduleName == "AutoDrop" then
+		local content = frame:FindFirstChild("Content")
+		if content and content:IsA("GuiObject") then
+			content.AnchorPoint = Vector2.new(0, 0)
+			content.Position = UDim2.fromOffset(8, 8)
+			content.Size = UDim2.new(1, -16, 1, -16)
+		end
 	elseif moduleName == "Optimizer" then
 		local content = frame:FindFirstChild("Content")
 		if content and content:IsA("GuiObject") then
@@ -9267,6 +10817,8 @@ local function mountModuleUI(moduleName)
 	local frame
 	if moduleName == "Mailer" then
 		frame = moduleGui:FindFirstChild("Main")
+	elseif moduleName == "AutoDrop" then
+		frame = moduleGui:FindFirstChild("MainFrame")
 	elseif moduleName == "Optimizer" then
 		frame = moduleGui:FindFirstChild("MainFrame")
 	else
@@ -9526,7 +11078,7 @@ closeButton.MouseButton1Click:Connect(function()
 		autoRejoinConnection = nil
 	end
 
-	for _, name in ipairs({"Bloom", "Mailer", "Optimizer"}) do
+	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop", "Optimizer"}) do
 		stopModule(name)
 	end
 
@@ -9540,7 +11092,7 @@ sideToggle.Visible = true
 
 task.defer(function()
 	-- Optimizer already started before UI creation. Only optional modules start here.
-	for _, name in ipairs({"Bloom", "Mailer"}) do
+	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
 		if moduleEnabled[name] then
 			local shouldStart = true
 			moduleEnabled[name] = false
@@ -9583,8 +11135,8 @@ task.spawn(function()
 		delayBox.Text = tostring(rejoinDelay)
 	end
 
-	-- Restore Bloom and Mailer preferences asynchronously.
-	for _, name in ipairs({"Bloom", "Mailer"}) do
+	-- Restore Bloom, Mailer, and Auto Drop preferences asynchronously.
+	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
 		local wanted = cloudConfig[name] == true
 		if wanted ~= moduleEnabled[name] then
 			setModule(name, wanted)
