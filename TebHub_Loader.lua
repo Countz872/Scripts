@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.2"
+local TEB_HUB_VERSION = "1.7.3"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7376,7 +7376,7 @@ local DROP_CATEGORY = "HarvestedFruits"
 
 local DEFAULT_DELAY = 0.03
 local DEFAULT_DROP_COOLDOWN = 1.5
-local MIN_DROP_COOLDOWN = 0.5
+local MIN_DROP_COOLDOWN = 0.03
 local MAX_DROP_COOLDOWN = 10.0
 local PROMOTE_TIMEOUT = 5.0
 local EQUIP_TIMEOUT = 2.5
@@ -8446,7 +8446,7 @@ delayBox.Position = UDim2.fromOffset(244, 86)
 delayBox.BackgroundColor3 = Color3.fromRGB(43, 47, 60)
 delayBox.BorderSizePixel = 0
 delayBox.Text = tostring(dropCooldown)
-delayBox.PlaceholderText = "1.5"
+delayBox.PlaceholderText = "0.03+"
 delayBox.ClearTextOnFocus = false
 delayBox.Font = Enum.Font.Code
 delayBox.TextSize = 10
