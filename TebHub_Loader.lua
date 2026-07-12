@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.9"
+local TEB_HUB_VERSION = "1.8.0"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -7415,6 +7415,7 @@ _G.TEBHubModules.Mailer = {
 --   FruitProxyUtil.RequestPromote(id)
 --
 -- No fake Tool cloning, no packet-sequence guessing, and no remote hooks.
+-- The final drop uses the current Packet.RemoteEvent drop opcode.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -7430,6 +7431,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- ============================================================
 
 local DROP_CATEGORY = "HarvestedFruits"
+
+-- The game's packet registration shifted forward by five:
+-- Mail recipient 1D -> 22, mail fruit 1C -> 21, and drop 3B -> 40.
+local DROP_PACKET_OPCODE = 0x40
 
 local DEFAULT_DELAY = 0.03
 local DEFAULT_DROP_COOLDOWN = 0.33
@@ -8204,7 +8209,7 @@ local function buildDropBuffer(itemId)
 
 	return buffer.fromstring(
 		string.char(
-			0x3B,
+			DROP_PACKET_OPCODE,
 			0x01,
 			#DROP_CATEGORY
 		)
@@ -8251,6 +8256,13 @@ end
 local function dropOneItem(item)
 	local itemId = item.itemId
 	local tool = findToolById(itemId)
+
+	lastPromotionId = tostring(itemId or "<none>")
+
+	if tool then
+		lastPromotionMethod = "existing-real-tool"
+		lastPromotionSlot = "<not-needed>"
+	end
 
 	if not tool then
 		local config =
@@ -8327,7 +8339,8 @@ local function dropOneItem(item)
 
 	return false,
 		string.format(
-			"Drop packet was sent but the promoted Tool remained. Method=%s | Slot=%s | Id=%s",
+			"Drop packet was sent but the equipped fruit Tool remained. Opcode=%02X | Method=%s | Slot=%s | Id=%s",
+			DROP_PACKET_OPCODE,
 			lastPromotionMethod,
 			lastPromotionSlot,
 			itemId
@@ -8815,7 +8828,8 @@ copyErrorButton.MouseButton1Click:Connect(function()
 			or tostring(statusLabel.Text)
 		)
 		.. string.format(
-			"\nPromotion method: %s\nSlot: %s\nId: %s",
+			"\nDrop opcode: %02X\nPromotion method: %s\nSlot: %s\nId: %s",
+			DROP_PACKET_OPCODE,
 			lastPromotionMethod,
 			lastPromotionSlot,
 			lastPromotionId
