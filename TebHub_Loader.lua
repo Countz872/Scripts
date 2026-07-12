@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.7"
+local TEB_HUB_VERSION = "1.7.9"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -7432,7 +7432,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local DROP_CATEGORY = "HarvestedFruits"
 
 local DEFAULT_DELAY = 0.03
-local DEFAULT_DROP_COOLDOWN = 1.5
+local DEFAULT_DROP_COOLDOWN = 0.33
 local MIN_DROP_COOLDOWN = 0.03
 local MAX_DROP_COOLDOWN = 10.0
 local PROMOTE_TIMEOUT = 5.0
@@ -8503,7 +8503,7 @@ delayBox.Position = UDim2.fromOffset(244, 86)
 delayBox.BackgroundColor3 = Color3.fromRGB(43, 47, 60)
 delayBox.BorderSizePixel = 0
 delayBox.Text = tostring(dropCooldown)
-delayBox.PlaceholderText = "0.03+"
+delayBox.PlaceholderText = "0.33"
 delayBox.ClearTextOnFocus = false
 delayBox.Font = Enum.Font.Code
 delayBox.TextSize = 10
@@ -9954,11 +9954,6 @@ local moduleGuiNames = {
 }
 
 local moduleBusy = {}
-
--- Mailer and Auto Drop are intentionally mutually exclusive.
--- This preserves the exact pre–Auto Drop Mailer runtime while Mailer is active.
-local inventoryModuleConflictMessage = nil
-
 local rejoinDelay = 150
 local rejoining = false
 local hubRunning = true
@@ -11040,45 +11035,9 @@ local function refreshModuleVisuals()
 end
 
 local function setModule(name, wanted)
-	inventoryModuleConflictMessage = nil
-
-	if wanted and name == "Mailer" then
-		-- Mailer gets exclusive ownership of harvested-fruit inventory.
-		if moduleEnabled.AutoDrop then
-			stopModule("AutoDrop")
-			clearHost("AutoDrop")
-
-			local autoDropGuiName = moduleGuiNames.AutoDrop
-			local autoDropGui =
-				autoDropGuiName
-				and playerGui:FindFirstChild(autoDropGuiName)
-
-			if autoDropGui then
-				autoDropGui:Destroy()
-			end
-
-			inventoryModuleConflictMessage =
-				"Auto Drop was fully stopped so Mailer can run in stable exclusive mode."
-		end
-	elseif wanted
-		and name == "AutoDrop"
-		and moduleEnabled.Mailer
-	then
-		moduleEnabled.AutoDrop = false
-		refreshModuleVisuals()
-		queueHubCloudSave()
-		setStatus(
-			"Auto Drop cannot start while Mailer is enabled. Disable Mailer first.",
-			true
-		)
-		return
-	end
-
 	if wanted then
 		local oldGuiName = moduleGuiNames[name]
-		local oldStandaloneGui =
-			oldGuiName
-			and playerGui:FindFirstChild(oldGuiName)
+		local oldStandaloneGui = oldGuiName and playerGui:FindFirstChild(oldGuiName)
 
 		if oldStandaloneGui then
 			oldStandaloneGui:Destroy()
@@ -11091,40 +11050,18 @@ local function setModule(name, wanted)
 		if not ok then
 			moduleEnabled[name] = false
 			clearHost(name)
-			setStatus(
-				name .. " failed: " .. tostring(err),
-				true
-			)
+			setStatus(name .. " failed: " .. tostring(err), true)
 		else
-			local mounted, mountError =
-				mountModuleUI(name)
+			local mounted, mountError = mountModuleUI(name)
 
 			if not mounted then
 				stopModule(name)
 				clearHost(name)
 				moduleEnabled[name] = false
-				setStatus(
-					name
-						.. " mount failed: "
-						.. tostring(mountError),
-					true
-				)
+				setStatus(name .. " mount failed: " .. tostring(mountError), true)
 			else
 				moduleEnabled[name] = true
-
-				if inventoryModuleConflictMessage then
-					setStatus(
-						name
-							.. " enabled. "
-							.. inventoryModuleConflictMessage
-					)
-				else
-					setStatus(
-						name
-							.. " enabled inside TEB Hub."
-					)
-				end
-
+				setStatus(name .. " enabled inside TEB Hub.")
 				showPage(name)
 			end
 		end
@@ -11133,7 +11070,6 @@ local function setModule(name, wanted)
 		clearHost(name)
 		setStatus(name .. " stopped.")
 	end
-
 	refreshModuleVisuals()
 	queueHubCloudSave()
 end
@@ -11300,22 +11236,13 @@ setHubVisible(true)
 sideToggle.Visible = true
 
 task.defer(function()
-	-- Optimizer already started before UI creation.
-	-- Mailer remains exclusive from Auto Drop during optional-module startup.
-	for _, name in ipairs({"Bloom", "Mailer"}) do
+	-- Optimizer already started before UI creation. Only optional modules start here.
+	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
 		if moduleEnabled[name] then
 			local shouldStart = true
 			moduleEnabled[name] = false
 			setModule(name, shouldStart)
 		end
-	end
-
-	if moduleEnabled.AutoDrop
-		and not moduleEnabled.Mailer
-	then
-		local shouldStart = true
-		moduleEnabled.AutoDrop = false
-		setModule("AutoDrop", shouldStart)
 	end
 
 	if moduleEnabled.Optimizer then
@@ -11353,22 +11280,12 @@ task.spawn(function()
 		delayBox.Text = tostring(rejoinDelay)
 	end
 
-	-- Restore optional modules asynchronously.
-	-- Mailer has priority over Auto Drop when both were saved enabled.
-	for _, name in ipairs({"Bloom", "Mailer"}) do
+	-- Restore Bloom, Mailer, and Auto Drop preferences asynchronously.
+	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
 		local wanted = cloudConfig[name] == true
-
 		if wanted ~= moduleEnabled[name] then
 			setModule(name, wanted)
 		end
-	end
-
-	local wantedAutoDrop =
-		cloudConfig.AutoDrop == true
-		and not moduleEnabled.Mailer
-
-	if wantedAutoDrop ~= moduleEnabled.AutoDrop then
-		setModule("AutoDrop", wantedAutoDrop)
 	end
 
 	-- Optimizer remains hardcoded ON. Auto Rejoin starts ON immediately,
