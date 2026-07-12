@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.0"
+local TEB_HUB_VERSION = "1.7.1"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7361,6 +7361,7 @@ _G.TEBHubModules.Mailer = {
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
@@ -7373,7 +7374,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 
 local DROP_CATEGORY = "HarvestedFruits"
 
-local DEFAULT_DELAY = 0.10
+local DEFAULT_DELAY = 0.03
 local PROMOTE_TIMEOUT = 5.0
 local EQUIP_TIMEOUT = 2.5
 local DROP_VERIFY_TIMEOUT = 3.0
@@ -7651,23 +7652,26 @@ local function findConfigurationById(itemId)
 	return nil
 end
 
-local function exactToolIsEquipped(itemId)
+local function findEquippedToolById(itemId)
 	local character = getCharacter()
 
 	if not character then
-		return false
+		return nil
 	end
 
 	for _, child in ipairs(character:GetChildren()) do
 		if child:IsA("Tool")
 			and getItemId(child) == itemId
-			and isFruitTool(child)
 		then
-			return true
+			return child
 		end
 	end
 
-	return false
+	return nil
+end
+
+local function exactToolIsEquipped(itemId)
+	return findEquippedToolById(itemId) ~= nil
 end
 
 local function itemStillExists(itemId)
@@ -7931,16 +7935,16 @@ local function waitForPromotedTool(itemId, timeout)
 	local started = os.clock()
 
 	while running and os.clock() - started < timeout do
-		local tool = findRealFruitToolById(itemId)
+		local tool = findToolById(itemId)
 
 		if tool then
 			return tool
 		end
 
-		task.wait(0.04)
+		task.wait(0.015)
 	end
 
-	return findRealFruitToolById(itemId)
+	return findToolById(itemId)
 end
 
 local function waitForExactEquip(itemId, timeout)
@@ -7951,7 +7955,7 @@ local function waitForExactEquip(itemId, timeout)
 			return true
 		end
 
-		task.wait(0.04)
+		task.wait(0.015)
 	end
 
 	return exactToolIsEquipped(itemId)
@@ -8074,7 +8078,9 @@ local function promoteAndEquipConfiguration(config)
 			"Real promoted Tool appeared but did not equip."
 	end
 
-	return findRealFruitToolById(itemId) or tool,
+	return findEquippedToolById(itemId)
+		or findToolById(itemId)
+		or tool,
 		"Server promoted and equipped the fruit proxy."
 end
 
@@ -8092,7 +8098,7 @@ local function equipExistingTool(tool, itemId)
 	local humanoid =
 		character and character:FindFirstChildOfClass("Humanoid")
 	local liveTool =
-		findRealFruitToolById(itemId) or tool
+		findToolById(itemId) or tool
 
 	if not humanoid then
 		return false, "Humanoid was not found."
@@ -8109,7 +8115,7 @@ local function equipExistingTool(tool, itemId)
 	task.wait(0.05)
 
 	liveTool =
-		findRealFruitToolById(itemId) or liveTool
+		findToolById(itemId) or liveTool
 
 	local ok, equipError = pcall(function()
 		humanoid:EquipTool(liveTool)
@@ -8183,7 +8189,7 @@ end
 
 local function dropOneItem(item)
 	local itemId = item.itemId
-	local tool = findRealFruitToolById(itemId)
+	local tool = findToolById(itemId)
 
 	if not tool then
 		local config =
@@ -8212,7 +8218,7 @@ local function dropOneItem(item)
 
 				if not config then
 					tool =
-						findRealFruitToolById(itemId)
+						findToolById(itemId)
 					break
 				end
 			end
@@ -8239,7 +8245,10 @@ local function dropOneItem(item)
 		end
 	end
 
-	task.wait(0.08)
+	-- InventoryController equips a promoted Tool on a Heartbeat.
+	-- One additional Heartbeat is enough for the server-approved Tool to be
+	-- ready; do not hold it equipped for another 1-2 seconds.
+	RunService.Heartbeat:Wait()
 
 	local sent, sendMessage = fireDrop(itemId)
 
@@ -8846,7 +8855,7 @@ task.defer(function()
 
 	if ready then
 		setStatus(
-			"Ready. RequestPromote and Pending.Equip are connected."
+			"Ready. Fast RequestPromote equip/drop is connected."
 		)
 	else
 		setStatus(
