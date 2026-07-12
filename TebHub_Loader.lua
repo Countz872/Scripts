@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.8.0"
+local TEB_HUB_VERSION = "1.8.2"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -2585,24 +2585,25 @@ local MAIL_BATCH_DELAY = 0.20
 local mailerRuntime = {
 	VerifyTimeout = 25,
 	VerifyInterval = 0.35,
+
+	-- This flag means the previous mail attempt removed no selected fruit.
+	-- It does not prevent another attempt.
 	ServerDailyLimitReached = false,
-	DailyLimitReachedAt = nil,
-	MailWindowStartedAt = nil,
-	PendingLimitResetSave = false,
-	DailyLimitWarningText = "You've reached your daily gift limit (50). Try again tomorrow!",
-	WatchedLimitText = setmetatable({}, { __mode = "k" }),
+	DailyLimitWarningText =
+		"Mail send was rejected; the server mail limit is suspected. Retrying is still allowed.",
+
 	TargetModeLocked = false,
 	FullBatchOnly = false,
 	FullBatchButton = nil,
 }
 
--- Your game has a real mail cooldown.
--- This script waits this long between each mail packet.
+-- Keep the real pacing delay between individual mail packets.
 local MAIL_COOLDOWN_SECONDS = 10.75
 
--- The game allows 50 successful gift mails per fixed 12-hour window.
+-- Display-only counter. It never blocks sending.
 local DEFAULT_MAIL_LIMIT_COUNT = 50
-local DEFAULT_MAIL_LIMIT_WINDOW_HOURS = 12
+local mailLimitCount = DEFAULT_MAIL_LIMIT_COUNT
+local mailUsageCount = 0
 
 local DEFAULT_TARGET_VALUE = "1B"
 local DEFAULT_TARGET_FRUIT_COUNT = 20
@@ -2613,116 +2614,18 @@ local targetMode = "Value" -- "Value" or "Fruit"
 -- registered its lifecycle and mounted its UI.
 local mailerCloudData = nil
 
-local mailLimitCount = math.max(
-	1,
-	math.floor(tonumber(mailerCloudData and mailerCloudData.mailLimitCount) or DEFAULT_MAIL_LIMIT_COUNT)
-)
-
-local mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
-
-local mailUsageTimestamps = {}
-
-if mailerCloudData and type(mailerCloudData.mailUsageTimestamps) == "table" then
-	for _, timestamp in ipairs(mailerCloudData.mailUsageTimestamps) do
-		timestamp = tonumber(timestamp)
-		if timestamp then
-			table.insert(mailUsageTimestamps, timestamp)
-		end
-	end
-end
-
-local function pruneMailUsage(now)
-	now = tonumber(now) or os.time()
-
-	local windowStart = tonumber(mailerRuntime.MailWindowStartedAt)
-
-	if not windowStart and #mailUsageTimestamps > 0 then
-		table.sort(mailUsageTimestamps)
-		windowStart = tonumber(mailUsageTimestamps[1])
-		mailerRuntime.MailWindowStartedAt = windowStart
-	end
-
-	if windowStart then
-		local expiresAt =
-			windowStart + (mailLimitWindowHours * 3600)
-
-		if now >= expiresAt then
-			table.clear(mailUsageTimestamps)
-			mailerRuntime.MailWindowStartedAt = nil
-			mailerRuntime.ServerDailyLimitReached = false
-			mailerRuntime.DailyLimitReachedAt = nil
-			mailerRuntime.PendingLimitResetSave = true
-			return 0
-		end
-	end
-
-	local kept = {}
-
-	for _, timestamp in ipairs(mailUsageTimestamps) do
-		timestamp = tonumber(timestamp)
-
-		if timestamp and timestamp <= now + 300 then
-			table.insert(kept, timestamp)
-		end
-	end
-
-	table.sort(kept)
-	mailUsageTimestamps = kept
-	return #mailUsageTimestamps
-end
-
 local function getMailLimitState()
-	local now = os.time()
-	local used = pruneMailUsage(now)
-	local remaining = math.max(0, mailLimitCount - used)
-	local resetIn = 0
-	local windowStart = tonumber(mailerRuntime.MailWindowStartedAt)
+	local used = math.clamp(
+		math.floor(tonumber(mailUsageCount) or 0),
+		0,
+		mailLimitCount
+	)
 
-	if windowStart then
-		resetIn = math.max(
-			0,
-			(windowStart + (mailLimitWindowHours * 3600)) - now
-		)
-	end
+	mailUsageCount = used
 
-	if mailerRuntime.ServerDailyLimitReached then
-		remaining = 0
-
-		if not windowStart then
-			windowStart = tonumber(mailerRuntime.DailyLimitReachedAt) or now
-			mailerRuntime.MailWindowStartedAt = windowStart
-			resetIn = math.max(
-				0,
-				(windowStart + (mailLimitWindowHours * 3600)) - now
-			)
-		end
-
-		if resetIn <= 0 then
-			table.clear(mailUsageTimestamps)
-			mailerRuntime.ServerDailyLimitReached = false
-			mailerRuntime.DailyLimitReachedAt = nil
-			mailerRuntime.MailWindowStartedAt = nil
-			mailerRuntime.PendingLimitResetSave = true
-			used = 0
-			remaining = mailLimitCount
-			resetIn = 0
-		end
-	end
-
-	return used, remaining, resetIn
+	return used, math.max(0, mailLimitCount - used)
 end
 
-local function formatDuration(seconds)
-	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
-	local hours = math.floor(seconds / 3600)
-	local minutes = math.floor((seconds % 3600) / 60)
-
-	if hours > 0 then
-		return string.format("%dh %dm", hours, minutes)
-	end
-
-	return string.format("%dm", minutes)
-end
 local FALLBACK_SELL_MULTI = 1
 
 -- Hypno Bloom support.
@@ -3534,7 +3437,7 @@ local mailLimitLabel = Instance.new("TextLabel")
 mailLimitLabel.Size = UDim2.fromOffset(82, 24)
 mailLimitLabel.Position = UDim2.fromOffset(0, 204)
 mailLimitLabel.BackgroundTransparency = 1
-mailLimitLabel.Text = "Mail limit:"
+mailLimitLabel.Text = "Mail counter:"
 mailLimitLabel.Font = Enum.Font.GothamBold
 mailLimitLabel.TextSize = 10
 mailLimitLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
@@ -3549,6 +3452,8 @@ mailLimitCountBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 mailLimitCountBox.BorderSizePixel = 0
 mailLimitCountBox.Text = tostring(mailLimitCount)
 mailLimitCountBox.PlaceholderText = "50"
+mailLimitCountBox.TextEditable = false
+mailLimitCountBox.Visible = false
 mailLimitCountBox.Font = Enum.Font.GothamBold
 mailLimitCountBox.TextSize = 10
 mailLimitCountBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -3562,9 +3467,10 @@ mailWindowBox.Size = UDim2.fromOffset(52, 24)
 mailWindowBox.Position = UDim2.fromOffset(124, 204)
 mailWindowBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 mailWindowBox.BorderSizePixel = 0
-mailWindowBox.Text = tostring(mailLimitWindowHours)
-mailWindowBox.PlaceholderText = "12"
+mailWindowBox.Text = ""
+mailWindowBox.PlaceholderText = ""
 mailWindowBox.TextEditable = false
+mailWindowBox.Visible = false
 mailWindowBox.Font = Enum.Font.GothamBold
 mailWindowBox.TextSize = 10
 mailWindowBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -3572,10 +3478,10 @@ mailWindowBox.ClearTextOnFocus = false
 mailWindowBox.Parent = content
 
 local mailLimitStatus = Instance.new("TextLabel")
-mailLimitStatus.Size = UDim2.new(1, -184, 0, 24)
-mailLimitStatus.Position = UDim2.fromOffset(184, 204)
+mailLimitStatus.Size = UDim2.new(1, -92, 0, 24)
+mailLimitStatus.Position = UDim2.fromOffset(92, 204)
 mailLimitStatus.BackgroundTransparency = 1
-mailLimitStatus.Text = "0/50 used"
+mailLimitStatus.Text = "0/50"
 mailLimitStatus.Font = Enum.Font.Code
 mailLimitStatus.TextSize = 9
 mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
@@ -6034,7 +5940,7 @@ local function makePreview()
 	end
 
 	local previewLines = {}
-	local usedMails, remainingMails, resetIn = getMailLimitState()
+	local usedMails, remainingMails = getMailLimitState()
 
 	if mailerRuntime.FullBatchOnly then
 		table.insert(
@@ -6046,11 +5952,16 @@ local function makePreview()
 	table.insert(
 		previewLines,
 		string.format(
-			"Mail allowance: %d/%d used | %d left%s",
+			"Mail counter: %d/%d%s",
 			usedMails,
 			mailLimitCount,
-			remainingMails,
-			remainingMails <= 0 and (" | reset in " .. formatDuration(resetIn)) or ""
+			mailerRuntime.ServerDailyLimitReached
+				and " | last attempt rejected; retry allowed"
+				or (
+					remainingMails <= 0
+					and " | next send will still be attempted"
+					or ""
+				)
 		)
 	)
 
@@ -6364,29 +6275,21 @@ local function sendPlans(plans, reason)
 		return
 	end
 
-	local usedMails, remainingMails, resetIn = getMailLimitState()
+	local usedMails = getMailLimitState()
 
 	if mailerRuntime.ServerDailyLimitReached then
-		addLog(mailerRuntime.DailyLimitWarningText, Color3.fromRGB(255, 90, 90))
-		updateMailLimitDisplay()
-		return
-	end
-
-	if remainingMails <= 0 then
 		addLog(
-			string.format(
-				"Mail limit reached: %d/%d in %.1f hours. Reset in %s.",
-				usedMails,
-				mailLimitCount,
-				mailLimitWindowHours,
-				formatDuration(resetIn)
-			),
-			Color3.fromRGB(255, 120, 120)
+			"Previous mail was rejected and the counter is marked 50/50. Retrying the server now; no timer is enforced.",
+			Color3.fromRGB(255, 220, 120)
 		)
-		updateMailLimitDisplay()
-		return
+	elseif usedMails >= mailLimitCount then
+		addLog(
+			"Mail counter is 50/50. Sending will still be attempted; success resets the counter.",
+			Color3.fromRGB(255, 220, 120)
+		)
 	end
 
+	local packetByte
 	local packetByte
 	local okSeq, seqErr = pcall(function()
 		packetByte = parseHexByte(seqBox.Text)
@@ -6520,19 +6423,9 @@ local function sendPlans(plans, reason)
 					for _, batch in ipairs(mailerRuntime.SplitSendableBatches(selected)) do
 						if not mailing then break end
 
-						local usedNow, remainingNow, resetNow = getMailLimitState()
-						if remainingNow <= 0 then
-							stoppedReason = string.format(
-								"mail limit reached (%d/%d); reset in %s",
-								usedNow,
-								mailLimitCount,
-								formatDuration(resetNow)
-							)
-							mailing = false
-							updateMailLimitDisplay()
-							break
-						end
-
+						-- The 0/50 counter is display-only. Even at 50/50,
+						-- always send a real probe to the server.
+						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
 						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
 						local itemKeys = getItemKeysFromBatch(batch)
 						if #itemKeys == 0 then stoppedReason = "selected batch had no item keys" break end
@@ -6598,12 +6491,15 @@ local function sendPlans(plans, reason)
 							)
 
 						if #removedFruits == 0 then
-							stoppedReason = mailerRuntime.ServerDailyLimitReached
-								and "server daily gift limit reached"
-								or "mail rejected: fruits stayed in inventory"
+							stoppedReason =
+								"mail rejected: server limit suspected"
+
+							mailerRuntime.MarkDailyGiftLimitReached(
+								"verification timed out; all selected fruits remained"
+							)
 
 							addLog(
-								"Mail was not confirmed after 25 seconds. Nothing was counted because all selected fruit keys are still live in inventory.",
+								"Mail was not confirmed after 25 seconds. Counter marked 50/50, but retrying remains allowed and there is no reset timer.",
 								Color3.fromRGB(255, 90, 90)
 							)
 
@@ -6612,6 +6508,7 @@ local function sendPlans(plans, reason)
 									"MAIL REJECTED | user=" .. tostring(username)
 										.. " | selected=" .. tostring(#batch)
 										.. " | remaining=" .. tostring(#remainingFruits)
+										.. " | counter=50/50 | retryAllowed=true"
 								)
 							end
 
@@ -6665,22 +6562,37 @@ local function sendPlans(plans, reason)
 							)
 						end
 
-						local allowanceOk, usedAfter, remainingAfterAllowance = pcall(recordMailUsage)
-						if allowanceOk then
-							addLog(
-								string.format(
-									"Verified mail %d | %d fruit(s) removed | allowance %d/%d | %d left",
-									sentMails,
-									#removedFruits,
-									tonumber(usedAfter) or 0,
-									mailLimitCount,
-									tonumber(remainingAfterAllowance) or 0
-								),
-								Color3.fromRGB(170, 255, 170)
-							)
+						local counterOk, usedAfter, remainingAfterCounter, counterReset =
+							pcall(recordMailUsage)
+
+						if counterOk then
+							if counterReset then
+								addLog(
+									string.format(
+										"Verified mail %d | %d fruit(s) removed | server still accepts mail, so counter restarted at 1/%d",
+										sentMails,
+										#removedFruits,
+										mailLimitCount
+									),
+									Color3.fromRGB(170, 255, 170)
+								)
+							else
+								addLog(
+									string.format(
+										"Verified mail %d | %d fruit(s) removed | counter %d/%d | %d remaining",
+										sentMails,
+										#removedFruits,
+										tonumber(usedAfter) or 0,
+										mailLimitCount,
+										tonumber(remainingAfterCounter) or 0
+									),
+									Color3.fromRGB(170, 255, 170)
+								)
+							end
 						else
 							addLog(
-								"Mail verified, but allowance update failed: " .. tostring(usedAfter),
+								"Mail verified, but counter update failed: "
+									.. tostring(usedAfter),
 								Color3.fromRGB(255, 190, 90)
 							)
 						end
@@ -6843,7 +6755,7 @@ end
 
 local function buildMailerCloudSettings()
 	return {
-		version = 2,
+		version = 3,
 		mailPacketFormatVersion =
 			MAIL_PACKET_FORMAT_VERSION,
 		targetMode = targetMode,
@@ -6851,11 +6763,8 @@ local function buildMailerCloudSettings()
 		valueTarget = targetBox.Text,
 		packetSequence = seqBox.Text,
 		fruitCount = math.max(1, math.floor(tonumber(fruitCountBox.Text) or DEFAULT_TARGET_FRUIT_COUNT)),
-		mailLimitCount = mailLimitCount,
-		mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS,
-		mailUsageTimestamps = mailUsageTimestamps,
-		mailWindowStartedAt = mailerRuntime.MailWindowStartedAt,
-		dailyLimitReachedAt = mailerRuntime.DailyLimitReachedAt,
+		mailUsedCount = mailUsageCount,
+		mailLimitRejected = mailerRuntime.ServerDailyLimitReached,
 		fullBatchOnly = mailerRuntime.FullBatchOnly,
 	}
 end
@@ -6912,73 +6821,32 @@ _G.TEBHubCloudSections.Mailer = {
 			mailerRuntime.FullBatchOnly = data.fullBatchOnly
 		end
 
-		local loadedLimitCount = math.floor(tonumber(data.mailLimitCount) or 0)
-		if loadedLimitCount > 0 then
-			mailLimitCount = loadedLimitCount
-		end
+		mailLimitCount = DEFAULT_MAIL_LIMIT_COUNT
 
-		mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
+		local loadedUsedCount =
+			math.floor(tonumber(data.mailUsedCount) or -1)
 
-		if type(data.mailUsageTimestamps) == "table" then
-			table.clear(mailUsageTimestamps)
-
-			for _, timestamp in ipairs(data.mailUsageTimestamps) do
-				timestamp = tonumber(timestamp)
-
-				if timestamp then
-					table.insert(mailUsageTimestamps, timestamp)
-				end
-			end
-		end
-
-		local loadNow = os.time()
-		local loadedWindowStart =
-			tonumber(data.mailWindowStartedAt)
-
-		if not loadedWindowStart
-			and #mailUsageTimestamps > 0
+		-- Migrate older timestamp-based saves by using only their count.
+		if loadedUsedCount < 0
+			and type(data.mailUsageTimestamps) == "table"
 		then
-			table.sort(mailUsageTimestamps)
-			loadedWindowStart =
-				tonumber(mailUsageTimestamps[1])
+			loadedUsedCount = #data.mailUsageTimestamps
 		end
 
-		if loadedWindowStart
-			and loadedWindowStart <= loadNow + 300
-			and loadNow < loadedWindowStart
-				+ (DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)
-		then
-			mailerRuntime.MailWindowStartedAt =
-				loadedWindowStart
-		else
-			mailerRuntime.MailWindowStartedAt = nil
-			table.clear(mailUsageTimestamps)
+		mailUsageCount = math.clamp(
+			loadedUsedCount >= 0 and loadedUsedCount or 0,
+			0,
+			mailLimitCount
+		)
+
+		mailerRuntime.ServerDailyLimitReached =
+			data.mailLimitRejected == true
+
+		if mailerRuntime.ServerDailyLimitReached then
+			mailUsageCount = mailLimitCount
 		end
 
-		local loadedReachedAt =
-			tonumber(data.dailyLimitReachedAt)
-
-		if loadedReachedAt
-			and mailerRuntime.MailWindowStartedAt
-		then
-			mailerRuntime.ServerDailyLimitReached = true
-			mailerRuntime.DailyLimitReachedAt =
-				loadedReachedAt
-
-			table.clear(mailUsageTimestamps)
-
-			for _ = 1, mailLimitCount do
-				table.insert(
-					mailUsageTimestamps,
-					mailerRuntime.MailWindowStartedAt
-				)
-			end
-		else
-			mailerRuntime.ServerDailyLimitReached = false
-			mailerRuntime.DailyLimitReachedAt = nil
-		end
-
-		pruneMailUsage()
+		updateTargetModeUI()
 		updateTargetModeUI()
 		updateTargetFormattedLabel()
 		updateMailLimitDisplay()
@@ -6989,157 +6857,92 @@ _G.TEBHubCloudSections.Mailer = {
 }
 
 local function updateMailLimitDisplay()
-	local used, remaining, resetIn = getMailLimitState()
-	mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
+	local used, remaining = getMailLimitState()
+
+	mailLimitCount = DEFAULT_MAIL_LIMIT_COUNT
 	mailLimitCountBox.Text = tostring(mailLimitCount)
-	mailWindowBox.Text = tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
+	mailWindowBox.Text = ""
 
-	if mailerRuntime.PendingLimitResetSave then
-		mailerRuntime.PendingLimitResetSave = false
-		queueMailerCloudSave()
-	end
-
-	if remaining <= 0 then
+	if mailerRuntime.ServerDailyLimitReached then
 		mailLimitStatus.Text = string.format(
-			"%d/%d used | reset in %s",
+			"%d/%d | rejected; retry allowed",
 			used,
-			mailLimitCount,
-			formatDuration(resetIn)
+			mailLimitCount
 		)
-		mailLimitStatus.TextColor3 = Color3.fromRGB(255, 120, 120)
-	elseif resetIn > 0 then
+		mailLimitStatus.TextColor3 =
+			Color3.fromRGB(255, 120, 120)
+	elseif remaining <= 0 then
 		mailLimitStatus.Text = string.format(
-			"%d/%d used | %d left | %s",
+			"%d/%d | send still allowed",
 			used,
-			mailLimitCount,
-			remaining,
-			formatDuration(resetIn)
+			mailLimitCount
 		)
-		mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
+		mailLimitStatus.TextColor3 =
+			Color3.fromRGB(255, 220, 120)
 	else
 		mailLimitStatus.Text = string.format(
-			"%d/%d used | %d left | starts on first gift",
+			"%d/%d",
 			used,
-			mailLimitCount,
-			remaining
+			mailLimitCount
 		)
-		mailLimitStatus.TextColor3 = Color3.fromRGB(170, 220, 255)
+		mailLimitStatus.TextColor3 =
+			Color3.fromRGB(170, 220, 255)
 	end
 end
 
 recordMailUsage = function()
-	local now = os.time()
+	local used = getMailLimitState()
 
-	if not mailerRuntime.MailWindowStartedAt then
-		mailerRuntime.MailWindowStartedAt = now
-		table.clear(mailUsageTimestamps)
-		addLog(
-			"Gift window started from the first verified mail. Reset in 12 hours.",
-			Color3.fromRGB(170, 220, 255)
-		)
+	-- A successful send after 50/50 or after a rejected probe proves that
+	-- the server accepts mail again. That successful mail is already one
+	-- completed send, so restart the observed counter at 1/50.
+	if used >= mailLimitCount
+		or mailerRuntime.ServerDailyLimitReached
+	then
+		mailUsageCount = 1
+		mailerRuntime.ServerDailyLimitReached = false
+
+		updateMailLimitDisplay()
+		queueMailerCloudSave()
+
+		return 1, mailLimitCount - 1, true
 	end
 
-	table.insert(mailUsageTimestamps, now)
-
-	local used = pruneMailUsage(now)
-	local remaining = math.max(
-		0,
-		mailLimitCount - used
+	mailUsageCount = math.min(
+		mailLimitCount,
+		used + 1
 	)
+
+	local newUsed, remaining =
+		getMailLimitState()
 
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
 
-	return used, remaining
-end
-
-
-function mailerRuntime.IsDailyGiftLimitWarning(value)
-	local normalized = tostring(value or "")
-		:lower()
-		:gsub("’", "'")
-		:gsub("%s+", " ")
-
-	return normalized:find("reached your daily gift", 1, true) ~= nil
-		and normalized:find("50", 1, true) ~= nil
-		and normalized:find("try again tomorrow", 1, true) ~= nil
+	return newUsed, remaining, false
 end
 
 function mailerRuntime.MarkDailyGiftLimitReached(sourceText)
-	if mailerRuntime.ServerDailyLimitReached then
-		return
-	end
-
 	mailerRuntime.ServerDailyLimitReached = true
-	mailing = false
-
-	local now = os.time()
-	mailerRuntime.DailyLimitReachedAt = now
-
-	-- Keep the countdown anchored to the first verified gift.
-	if not mailerRuntime.MailWindowStartedAt then
-		mailerRuntime.MailWindowStartedAt =
-			tonumber(mailUsageTimestamps[1]) or now
-	end
-
-	table.clear(mailUsageTimestamps)
-
-	for _ = 1, mailLimitCount do
-		table.insert(
-			mailUsageTimestamps,
-			mailerRuntime.MailWindowStartedAt
-		)
-	end
+	mailUsageCount = mailLimitCount
 
 	updateMailLimitDisplay()
 	queueMailerCloudSave()
+
 	addLog(
 		mailerRuntime.DailyLimitWarningText
-			.. " Mailer reset in "
-			.. formatDuration(DEFAULT_MAIL_LIMIT_WINDOW_HOURS * 3600)
-			.. ".",
+			.. " Counter is 50/50; Send remains available.",
 		Color3.fromRGB(255, 90, 90)
 	)
 
 	if debugTrace then
-		debugTrace("DAILY LIMIT DETECTED: " .. tostring(sourceText))
+		debugTrace(
+			"MAIL LIMIT SUSPECTED | "
+				.. tostring(sourceText)
+				.. " | counter=50/50 | retryAllowed=true"
+		)
 	end
 end
-
-function mailerRuntime.WatchLimitObject(object)
-	if mailerRuntime.WatchedLimitText[object] then
-		return
-	end
-
-	if not (
-		object:IsA("TextLabel")
-		or object:IsA("TextButton")
-		or object:IsA("TextBox")
-	) then
-		return
-	end
-
-	mailerRuntime.WatchedLimitText[object] = true
-
-	local function inspect()
-		local ok, value = pcall(function()
-			return object.Text
-		end)
-
-		if ok and mailerRuntime.IsDailyGiftLimitWarning(value) then
-			mailerRuntime.MarkDailyGiftLimitReached(value)
-		end
-	end
-
-	inspect()
-	object:GetPropertyChangedSignal("Text"):Connect(inspect)
-end
-
-for _, object in ipairs(playerGui:GetDescendants()) do
-	mailerRuntime.WatchLimitObject(object)
-end
-
-playerGui.DescendantAdded:Connect(mailerRuntime.WatchLimitObject)
 
 local function updateTargetModeUI()
 	local fruitMode = targetMode == "Fruit"
@@ -7215,20 +7018,8 @@ fruitCountBox.FocusLost:Connect(function()
 	queueMailerCloudSave()
 end)
 
-mailLimitCountBox.FocusLost:Connect(function()
-	local value = math.floor(tonumber(mailLimitCountBox.Text) or 0)
-	mailLimitCount = math.clamp(value > 0 and value or DEFAULT_MAIL_LIMIT_COUNT, 1, 500)
-	updateMailLimitDisplay()
-	queueMailerCloudSave()
-end)
-
-mailWindowBox.FocusLost:Connect(function()
-	mailLimitWindowHours = DEFAULT_MAIL_LIMIT_WINDOW_HOURS
-	mailWindowBox.Text = tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
-	pruneMailUsage()
-	updateMailLimitDisplay()
-	queueMailerCloudSave()
-end)
+-- The 0/50 counter is display-only. There is no configurable limit
+-- window and no timer-based reset.
 
 updateTargetModeUI()
 updateMailLimitDisplay()
@@ -7362,13 +7153,9 @@ task.defer(function()
 end)
 
 	addLog(
-	"Loaded mailer with fixed "
-		.. tostring(mailLimitCount)
-		.. "-mail / "
-		.. tostring(DEFAULT_MAIL_LIMIT_WINDOW_HOURS)
-		.. "h tracker.",
-	Color3.fromRGB(170, 255, 170)
-)
+		"Loaded Mailer with a result-based 0/50 counter. The counter never blocks sends and has no reset timer.",
+		Color3.fromRGB(170, 255, 170)
+	)
 debugTrace(
 	"TEB Hub version: "
 		.. tostring(
