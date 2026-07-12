@@ -10,7 +10,68 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.4"
+local TEB_HUB_VERSION = "1.7.5"
+_G.TEB_HUB_VERSION = TEB_HUB_VERSION
+
+-- Shared 00-7F rolling sequence used by Networking and the raw Mailer.
+-- Auto Drop consumes one sequence byte for each RequestPromote packet.
+local packetSequenceCoordinator = {
+	Next = 0x3E,
+	Reset = 0x3E,
+	Last = nil,
+	LastSource = "hub-default",
+	AutoDropConsumed = 0,
+	MailerConsumed = 0,
+	TotalConsumed = 0,
+}
+
+function packetSequenceCoordinator:SetNext(value, resetValue, source)
+	value = tonumber(value)
+	if not value or value < 0 or value > 0x7F then
+		return false, "Sequence must be 00 through 7F."
+	end
+	resetValue = tonumber(resetValue)
+	if not resetValue or resetValue < 0 or resetValue > 0x7F then
+		resetValue = value
+	end
+	self.Next = math.floor(value)
+	self.Reset = math.floor(resetValue)
+	self.Last = nil
+	self.LastSource = tostring(source or "manual-sync")
+	self.AutoDropConsumed = 0
+	self.MailerConsumed = 0
+	self.TotalConsumed = 0
+	return true
+end
+
+function packetSequenceCoordinator:Consume(source)
+	local current = tonumber(self.Next)
+	if current == nil then
+		return nil, "Sequence coordinator is not initialized."
+	end
+	current = math.floor(current)
+	self.Last = current
+	self.LastSource = tostring(source or "unknown")
+	self.TotalConsumed = (tonumber(self.TotalConsumed) or 0) + 1
+	local lowered = self.LastSource:lower()
+	if lowered:find("autodrop", 1, true) then
+		self.AutoDropConsumed = (tonumber(self.AutoDropConsumed) or 0) + 1
+	elseif lowered:find("mailer", 1, true) then
+		self.MailerConsumed = (tonumber(self.MailerConsumed) or 0) + 1
+	end
+	local nextValue = current + 1
+	if nextValue > 0x7F then
+		nextValue = tonumber(self.Reset) or 0
+	end
+	self.Next = nextValue
+	return current
+end
+
+function packetSequenceCoordinator:Peek()
+	return tonumber(self.Next)
+end
+
+_G.TEBPacketSequenceCoordinator = packetSequenceCoordinator
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -3351,6 +3412,24 @@ local seqCorner = Instance.new("UICorner")
 seqCorner.CornerRadius = UDim.new(0, 6)
 seqCorner.Parent = seqBox
 
+local function syncSharedPacketSequenceFromBox(reason, forceReset)
+	local parsed = parseHexByte(seqBox.Text)
+	local coordinator = _G.TEBPacketSequenceCoordinator
+	if not coordinator then
+		return parsed
+	end
+	local hasConsumed = (tonumber(coordinator.TotalConsumed) or 0) > 0
+	if forceReset or not hasConsumed then
+		local ok, syncError = coordinator:SetNext(parsed, parsed, reason or "mailer-seq-box")
+		if not ok then error(syncError) end
+	end
+	local nextSequence = coordinator:Peek() or parsed
+	seqBox.Text = string.format("%02X", nextSequence)
+	return nextSequence
+end
+
+syncSharedPacketSequenceFromBox("mailer-ui-initialization", false)
+
 local previewButton = Instance.new("TextButton")
 previewButton.Name = "Preview"
 previewButton.Size = UDim2.fromOffset(62, 24)
@@ -6357,18 +6436,31 @@ local function sendPlans(plans, reason)
 		return
 	end
 
-	local packetByte
+	local configuredPacketByte
 	local okSeq, seqErr = pcall(function()
-		packetByte = parseHexByte(seqBox.Text)
+		configuredPacketByte = parseHexByte(seqBox.Text)
 	end)
-
 	if not okSeq then
 		addLog("Bad sequence byte: " .. tostring(seqErr), Color3.fromRGB(255, 120, 120))
 		return
 	end
-
-	local packetSequenceResetByte = packetByte
+	local coordinator = _G.TEBPacketSequenceCoordinator
+	if coordinator and coordinator:Peek() == nil then
+		coordinator:SetNext(configuredPacketByte, configuredPacketByte, "mailer-send-initialization")
+	end
+	local packetByte = coordinator and coordinator:Peek() or configuredPacketByte
+	local packetSequenceResetByte = coordinator and tonumber(coordinator.Reset) or configuredPacketByte
 	local packetSequenceRollovers = 0
+	seqBox.Text = string.format("%02X", packetByte)
+	if debugTrace then
+		debugTrace(string.format(
+			"MAIL SEQUENCE SYNC | configured=%02X | next=%02X | autoDropConsumed=%d | mailerConsumed=%d",
+			configuredPacketByte,
+			packetByte,
+			coordinator and tonumber(coordinator.AutoDropConsumed) or 0,
+			coordinator and tonumber(coordinator.MailerConsumed) or 0
+		))
+	end
 
 	mailing = true
 
@@ -6549,33 +6641,32 @@ local function sendPlans(plans, reason)
 							break
 						end
 
-						local recipientByte = packetByte
-						packetByte = incrementPacketByte(
-							packetByte,
-							packetSequenceResetByte
-						)
-
-						local fruitPacketByte = packetByte
-						local nextPacketByte = incrementPacketByte(
-							packetByte,
-							packetSequenceResetByte
-						)
-
-						if nextPacketByte == packetSequenceResetByte
-							and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE
-						then
-							packetSequenceRollovers += 1
-							addLog(
-								string.format(
-									"Packet sequence rollover #%d: 7F → %02X. Continuing queue.",
-									packetSequenceRollovers,
-									packetSequenceResetByte
-								),
-								Color3.fromRGB(170, 220, 255)
-							)
+						local recipientByte
+						if coordinator then
+							recipientByte = coordinator:Consume("mailer-recipient")
+						else
+							recipientByte = packetByte
+							packetByte = incrementPacketByte(packetByte, packetSequenceResetByte)
 						end
-
-						packetByte = nextPacketByte
+						local fruitPacketByte
+						if coordinator then
+							fruitPacketByte = coordinator:Consume("mailer-fruit")
+							local nextPacketByte = coordinator:Peek()
+							if nextPacketByte == packetSequenceResetByte and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE then
+								packetSequenceRollovers += 1
+								addLog(string.format("Packet sequence rollover #%d: 7F → %02X. Continuing queue.", packetSequenceRollovers, packetSequenceResetByte), Color3.fromRGB(170, 220, 255))
+							end
+							packetByte = nextPacketByte or packetSequenceResetByte
+						else
+							fruitPacketByte = packetByte
+							local nextPacketByte = incrementPacketByte(packetByte, packetSequenceResetByte)
+							if nextPacketByte == packetSequenceResetByte and fruitPacketByte == MAX_PACKET_SEQUENCE_BYTE then
+								packetSequenceRollovers += 1
+								addLog(string.format("Packet sequence rollover #%d: 7F → %02X. Continuing queue.", packetSequenceRollovers, packetSequenceResetByte), Color3.fromRGB(170, 220, 255))
+							end
+							packetByte = nextPacketByte
+						end
+						seqBox.Text = string.format("%02X", packetByte)
 						local batchValue = getSelectionTotal(batch)
 
 						addLog(string.format("%s mail %d | %d fruit(s) | Base %s | seq %02X/%02X", username, sentMails + 1, #itemKeys, formatShortNumber(batchValue), recipientByte, fruitPacketByte))
@@ -6610,6 +6701,7 @@ local function sendPlans(plans, reason)
 									"MAIL REJECTED | user=" .. tostring(username)
 										.. " | selected=" .. tostring(#batch)
 										.. " | remaining=" .. tostring(#remainingFruits)
+										.. string.format(" | seq=%02X/%02X | next=%02X | autoDropConsumed=%d", recipientByte, fruitPacketByte, tonumber(packetByte) or 0, coordinator and tonumber(coordinator.AutoDropConsumed) or 0)
 								)
 							end
 
@@ -6891,6 +6983,9 @@ _G.TEBHubCloudSections.Mailer = {
 
 		if type(data.packetSequence) == "string" or type(data.packetSequence) == "number" then
 			seqBox.Text = tostring(data.packetSequence)
+			local coordinator = _G.TEBPacketSequenceCoordinator
+			local consumed = coordinator and tonumber(coordinator.TotalConsumed) or 0
+			syncSharedPacketSequenceFromBox("mailer-cloud-apply", consumed == 0)
 		end
 
 		local loadedFruitCount = math.floor(tonumber(data.fruitCount) or 0)
@@ -7224,7 +7319,15 @@ updateTargetModeUI()
 updateMailLimitDisplay()
 
 recipientBox.FocusLost:Connect(queueMailerCloudSave)
-seqBox.FocusLost:Connect(queueMailerCloudSave)
+seqBox.FocusLost:Connect(function()
+	local ok, syncError = pcall(function()
+		syncSharedPacketSequenceFromBox("mailer-manual-sequence", true)
+	end)
+	if not ok then
+		addLog("Bad sequence byte: " .. tostring(syncError), Color3.fromRGB(255, 120, 120))
+	end
+	queueMailerCloudSave()
+end)
 
 targetBox:GetPropertyChangedSignal("Text"):Connect(updateTargetFormattedLabel)
 
@@ -7359,7 +7462,7 @@ end)
 		.. "h tracker.",
 	Color3.fromRGB(170, 255, 170)
 )
-debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
+debugTrace("TEB Hub version: " .. tostring(_G.TEB_HUB_VERSION or TEB_HUB_VERSION))
 debugTrace("Local player: " .. tostring(player and player.Name))
 debugTrace("GetUserIdFromNameAsync method: " .. tostring(Players.GetUserIdFromNameAsync))
 debugTrace("Clipboard function available: " .. tostring(type(setclipboard) == "function" or type(toclipboard) == "function"))
@@ -8015,6 +8118,14 @@ local function waitForExactEquip(itemId, timeout)
 	return exactToolIsEquipped(itemId)
 end
 
+local function consumeAutoDropPromotionSequence(source)
+	local coordinator = _G.TEBPacketSequenceCoordinator
+	if not coordinator or type(coordinator.Consume) ~= "function" then
+		return nil
+	end
+	return coordinator:Consume("autodrop-" .. tostring(source or "promote"))
+end
+
 local function promoteAndEquipConfiguration(config)
 	if not config
 		or not config.Parent
@@ -8056,6 +8167,8 @@ local function promoteAndEquipConfiguration(config)
 				"Internal slot Select failed: "
 				.. tostring(selectError)
 		end
+
+		consumeAutoDropPromotionSequence("request-promote-select")
 	else
 		-- Fallback: perform exactly what Select() does.
 		slotIndex =
@@ -8086,6 +8199,8 @@ local function promoteAndEquipConfiguration(config)
 				"RequestPromote failed: "
 				.. tostring(promoteError)
 		end
+
+		consumeAutoDropPromotionSequence("request-promote-direct")
 	end
 
 	local tool =
@@ -8873,10 +8988,11 @@ copyErrorButton.MouseButton1Click:Connect(function()
 			or tostring(statusLabel.Text)
 		)
 		.. string.format(
-			"\nPromotion method: %s\nSlot: %s\nId: %s",
+			"\nPromotion method: %s\nSlot: %s\nId: %s\nNext packet sequence: %s",
 			lastPromotionMethod,
 			lastPromotionSlot,
-			lastPromotionId
+			lastPromotionId,
+			_G.TEBPacketSequenceCoordinator and string.format("%02X", _G.TEBPacketSequenceCoordinator:Peek() or 0) or "<unavailable>"
 		)
 
 	local copied = false
