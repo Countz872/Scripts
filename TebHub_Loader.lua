@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.3"
+local TEB_HUB_VERSION = "1.7.4"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -6371,6 +6371,17 @@ local function sendPlans(plans, reason)
 	local packetSequenceRollovers = 0
 
 	mailing = true
+
+	_G.TEBInventoryOperations =
+		_G.TEBInventoryOperations
+		or {
+			MailerBusy = false,
+			AutoDropBusy = false,
+		}
+
+	-- Mailer gets priority before Auto Drop can begin another fruit.
+	_G.TEBInventoryOperations.MailerBusy = true
+
 	sendButton.Text = "Sending..."
 	addLog(
 		"Starting mail queue with " .. tostring(#plans) .. " plan(s).",
@@ -6379,6 +6390,23 @@ local function sendPlans(plans, reason)
 	prepareProgressRows(plans)
 
 	task.spawn(function()
+		local showedWaitMessage = false
+
+		while mailing
+			and _G.TEBInventoryOperations
+			and _G.TEBInventoryOperations.AutoDropBusy == true
+		do
+			if not showedWaitMessage then
+				showedWaitMessage = true
+				addLog(
+					"Waiting for the current Auto Drop fruit to finish before mailing...",
+					Color3.fromRGB(255, 220, 120)
+				)
+			end
+
+			task.wait(0.05)
+		end
+
 		local ok, err = xpcall(function()
 			local needsCooldownBeforeNextMail = false
 
@@ -6716,6 +6744,11 @@ local function sendPlans(plans, reason)
 		end
 
 		mailing = false
+
+		if _G.TEBInventoryOperations then
+			_G.TEBInventoryOperations.MailerBusy = false
+		end
+
 		sendButton.Text = "Mail"
 	end)
 end
@@ -7338,6 +7371,11 @@ _G.TEBHubModules.Mailer = {
 	Stop = function()
 		running = false
 		mailing = false
+
+		if _G.TEBInventoryOperations then
+			_G.TEBInventoryOperations.MailerBusy = false
+		end
+
 		if gui and gui.Parent then
 			gui:Destroy()
 		end
@@ -7345,7 +7383,10 @@ _G.TEBHubModules.Mailer = {
 	IsRunning = function()
 		-- Runtime state is independent from UI visibility or GUI parenting.
 		return running == true
-	end
+	end,
+	IsMailing = function()
+		return mailing == true
+	end,
 }
 
 ]=],
@@ -7368,6 +7409,15 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+_G.TEBInventoryOperations =
+	_G.TEBInventoryOperations
+	or {
+		MailerBusy = false,
+		AutoDropBusy = false,
+	}
+
+_G.TEBInventoryOperations.AutoDropBusy = false
+
 -- ============================================================
 -- SETTINGS
 -- ============================================================
@@ -7375,7 +7425,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local DROP_CATEGORY = "HarvestedFruits"
 
 local DEFAULT_DELAY = 0.03
-local DEFAULT_DROP_COOLDOWN = 0.33
+local DEFAULT_DROP_COOLDOWN = 1.5
 local MIN_DROP_COOLDOWN = 0.03
 local MAX_DROP_COOLDOWN = 10.0
 local PROMOTE_TIMEOUT = 5.0
@@ -8604,6 +8654,53 @@ local function waitForDropCooldown(message, singlePass)
 	end
 end
 
+local function waitForMailerIdle(singlePass)
+	_G.TEBInventoryOperations =
+		_G.TEBInventoryOperations
+		or {
+			MailerBusy = false,
+			AutoDropBusy = false,
+		}
+
+	local showedPauseStatus = false
+
+	while running
+		and _G.TEBInventoryOperations.MailerBusy == true
+	do
+		if not singlePass and not autoDropEnabled then
+			return false
+		end
+
+		if not showedPauseStatus then
+			showedPauseStatus = true
+			setStatus(
+				"Auto Drop paused while Fruit Mailer is sending."
+			)
+		end
+
+		task.wait(0.05)
+	end
+
+	return running
+		and (singlePass or autoDropEnabled)
+end
+
+local function clearAutoDropPending(itemId)
+	if not fruitProxyUtil
+		or type(fruitProxyUtil.Pending) ~= "table"
+	then
+		return
+	end
+
+	if fruitProxyUtil.Pending.Equip == itemId then
+		fruitProxyUtil.Pending.Equip = nil
+	end
+
+	if type(fruitProxyUtil.Pending.Slots) == "table" then
+		fruitProxyUtil.Pending.Slots[itemId] = nil
+	end
+end
+
 local function processQueue(singlePass)
 	if processing then
 		setStatus("A drop queue is already active.")
@@ -8636,6 +8733,10 @@ local function processQueue(singlePass)
 			continue
 		end
 
+		if not waitForMailerIdle(singlePass) then
+			break
+		end
+
 		setStatus(
 			string.format(
 				"%s → Promote/Equip → Drop\n%s",
@@ -8644,7 +8745,21 @@ local function processQueue(singlePass)
 			)
 		)
 
-		local success, message = dropOneItem(item)
+		_G.TEBInventoryOperations.AutoDropBusy = true
+
+		local callOk, success, message =
+			pcall(dropOneItem, item)
+
+		_G.TEBInventoryOperations.AutoDropBusy = false
+		clearAutoDropPending(item.itemId)
+
+		if not callOk then
+			local runtimeError = success
+			success = false
+			message =
+				"Auto Drop runtime error: "
+				.. tostring(runtimeError)
+		end
 
 		if success then
 			droppedCount += 1
@@ -8823,6 +8938,12 @@ local function stopAutoDropRuntime()
 	running = false
 	autoDropEnabled = false
 
+	if _G.TEBInventoryOperations then
+		_G.TEBInventoryOperations.AutoDropBusy = false
+	end
+
+	clearAutoDropPending(lastPromotionId)
+
 	for _, connection in ipairs(connections) do
 		pcall(function()
 			connection:Disconnect()
@@ -8961,6 +9082,10 @@ _G.TEBHubModules.AutoDrop = {
 			Tools = toolCount,
 			Configurations = configurationCount,
 			DropCooldown = dropCooldown,
+			PausedForMailer =
+				_G.TEBInventoryOperations
+				and _G.TEBInventoryOperations.MailerBusy == true
+				or false,
 		}
 	end,
 }
@@ -9879,6 +10004,13 @@ _G.TEBHubModules.Optimizer = {
 -- These hardcoded defaults are applied immediately on every launch.
 local loadedHubConfig = {}
 local loadedHubSource = "local-startup"
+
+-- Shared inventory-operation interlock.
+-- Mailer and Auto Drop both mutate harvested-fruit inventory.
+_G.TEBInventoryOperations = _G.TEBInventoryOperations or {
+	MailerBusy = false,
+	AutoDropBusy = false,
+}
 
 local moduleEnabled = {
 	Bloom = false,
@@ -11164,6 +11296,11 @@ closeButton.MouseButton1Click:Connect(function()
 	if autoRejoinConnection then
 		autoRejoinConnection:Disconnect()
 		autoRejoinConnection = nil
+	end
+
+	if _G.TEBInventoryOperations then
+		_G.TEBInventoryOperations.MailerBusy = false
+		_G.TEBInventoryOperations.AutoDropBusy = false
 	end
 
 	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop", "Optimizer"}) do
