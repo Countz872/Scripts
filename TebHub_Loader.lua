@@ -7375,7 +7375,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local DROP_CATEGORY = "HarvestedFruits"
 
 local DEFAULT_DELAY = 0.03
-local DEFAULT_DROP_COOLDOWN = 1.5
+local DEFAULT_DROP_COOLDOWN = 0.33
 local MIN_DROP_COOLDOWN = 0.03
 local MAX_DROP_COOLDOWN = 10.0
 local PROMOTE_TIMEOUT = 5.0
