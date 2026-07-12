@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.1"
+local TEB_HUB_VERSION = "1.7.2"
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -7375,6 +7375,9 @@ local playerGui = player:WaitForChild("PlayerGui")
 local DROP_CATEGORY = "HarvestedFruits"
 
 local DEFAULT_DELAY = 0.03
+local DEFAULT_DROP_COOLDOWN = 1.5
+local MIN_DROP_COOLDOWN = 0.5
+local MAX_DROP_COOLDOWN = 10.0
 local PROMOTE_TIMEOUT = 5.0
 local EQUIP_TIMEOUT = 2.5
 local DROP_VERIFY_TIMEOUT = 3.0
@@ -7390,6 +7393,7 @@ local running = true
 local processing = false
 local autoDropEnabled = false
 local dropDelay = DEFAULT_DELAY
+local dropCooldown = DEFAULT_DROP_COOLDOWN
 
 local remoteEvent = nil
 local fruitProxyUtil = nil
@@ -8426,13 +8430,23 @@ copyErrorButton.TextSize = 10
 copyErrorButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 copyErrorButton.Parent = body
 
+local cooldownLabel = Instance.new("TextLabel")
+cooldownLabel.Size = UDim2.fromOffset(26, 28)
+cooldownLabel.Position = UDim2.fromOffset(216, 86)
+cooldownLabel.BackgroundTransparency = 1
+cooldownLabel.Text = "CD"
+cooldownLabel.Font = Enum.Font.GothamBold
+cooldownLabel.TextSize = 10
+cooldownLabel.TextColor3 = Color3.fromRGB(190, 220, 255)
+cooldownLabel.Parent = body
+
 local delayBox = Instance.new("TextBox")
-delayBox.Size = UDim2.fromOffset(96, 28)
-delayBox.Position = UDim2.fromOffset(218, 86)
+delayBox.Size = UDim2.fromOffset(70, 28)
+delayBox.Position = UDim2.fromOffset(244, 86)
 delayBox.BackgroundColor3 = Color3.fromRGB(43, 47, 60)
 delayBox.BorderSizePixel = 0
-delayBox.Text = tostring(dropDelay)
-delayBox.PlaceholderText = "Delay"
+delayBox.Text = tostring(dropCooldown)
+delayBox.PlaceholderText = "1.5"
 delayBox.ClearTextOnFocus = false
 delayBox.Font = Enum.Font.Code
 delayBox.TextSize = 10
@@ -8521,9 +8535,10 @@ end
 
 local function buildAutoDropCloudSettings()
 	return {
-		version = 1,
+		version = 2,
 		autoDropEnabled = autoDropEnabled,
 		dropDelay = dropDelay,
+		dropCooldown = dropCooldown,
 	}
 end
 
@@ -8555,6 +8570,38 @@ local function getNextReadyItem()
 	end
 
 	return nil, items
+end
+
+local function waitForDropCooldown(message, singlePass)
+	local duration = tonumber(dropCooldown) or 0
+
+	if duration <= 0 then
+		return
+	end
+
+	local deadline = os.clock() + duration
+
+	while running do
+		if not singlePass and not autoDropEnabled then
+			break
+		end
+
+		local remaining = deadline - os.clock()
+
+		if remaining <= 0 then
+			break
+		end
+
+		setStatus(
+			string.format(
+				"%s\nDrop cooldown: %.1fs",
+				tostring(message),
+				remaining
+			)
+		)
+
+		task.wait(math.min(0.10, remaining))
+	end
 end
 
 local function processQueue(singlePass)
@@ -8602,17 +8649,26 @@ local function processQueue(singlePass)
 		if success then
 			droppedCount += 1
 			failedUntil[item.itemId] = nil
-			setStatus(message)
+
+			-- Pause the queue after the successful drop. The next fruit is not
+			-- promoted or equipped until the server's drop cooldown has ended.
+			local remainingItems = refreshCounts()
+
+			if #remainingItems > 0 then
+				waitForDropCooldown(message, singlePass)
+			else
+				setStatus(message)
+			end
 		else
 			failedCount += 1
 			failedUntil[item.itemId] =
 				os.clock() + FAILURE_COOLDOWN
 			lastError = tostring(message)
 			setStatus(message, true)
-		end
 
-		refreshCounts()
-		task.wait(dropDelay)
+			refreshCounts()
+			task.wait(dropDelay)
+		end
 	end
 
 	processing = false
@@ -8633,8 +8689,18 @@ local function applyAutoDropCloudSettings(data)
 	local savedDelay = tonumber(data.dropDelay)
 	if savedDelay then
 		dropDelay = math.clamp(savedDelay, 0.03, 10)
-		delayBox.Text = tostring(dropDelay)
 	end
+
+	local savedCooldown = tonumber(data.dropCooldown)
+	if savedCooldown then
+		dropCooldown = math.clamp(
+			savedCooldown,
+			MIN_DROP_COOLDOWN,
+			MAX_DROP_COOLDOWN
+		)
+	end
+
+	delayBox.Text = tostring(dropCooldown)
 
 	local wantedAuto = data.autoDropEnabled == true
 	autoDropEnabled = wantedAuto
@@ -8719,19 +8785,28 @@ end)
 delayBox.FocusLost:Connect(function()
 	local value = tonumber(delayBox.Text)
 
-	if value and value >= 0.03 and value <= 10 then
-		dropDelay = value
-		delayBox.Text = tostring(dropDelay)
+	if value
+		and value >= MIN_DROP_COOLDOWN
+		and value <= MAX_DROP_COOLDOWN
+	then
+		dropCooldown = value
+		delayBox.Text = tostring(dropCooldown)
 		queueAutoDropCloudSave()
+
 		setStatus(
-			"Drop delay set to "
-				.. tostring(dropDelay)
+			"Post-drop cooldown set to "
+				.. tostring(dropCooldown)
 				.. " seconds."
 		)
 	else
-		delayBox.Text = tostring(dropDelay)
+		delayBox.Text = tostring(dropCooldown)
+
 		setStatus(
-			"Delay must be between 0.03 and 10 seconds.",
+			string.format(
+				"Cooldown must be between %.1f and %.1f seconds.",
+				MIN_DROP_COOLDOWN,
+				MAX_DROP_COOLDOWN
+			),
 			true
 		)
 	end
@@ -8855,7 +8930,10 @@ task.defer(function()
 
 	if ready then
 		setStatus(
-			"Ready. Fast RequestPromote equip/drop is connected."
+			string.format(
+				"Ready. Drop cooldown is %.1f seconds.",
+				dropCooldown
+			)
 		)
 	else
 		setStatus(
@@ -8882,6 +8960,7 @@ _G.TEBHubModules.AutoDrop = {
 			Failed = failedCount,
 			Tools = toolCount,
 			Configurations = configurationCount,
+			DropCooldown = dropCooldown,
 		}
 	end,
 }
