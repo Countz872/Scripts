@@ -10,7 +10,8 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.7.6"
+local TEB_HUB_VERSION = "1.7.7"
+_G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
 -- Keeping them stable preserves player settings across future releases.
@@ -2541,9 +2542,10 @@ _G.TEBHubModules.Bloom = {
 --// - Keeps compact expandable logs.
 --//
 --// Packet notes:
---// - Recipient packet: 1D 01 <sequence> <usernameLength> <username>
---// - Mail packet:      1C 01 <sequence> <recipientUserId as little-endian f64> ...
---// - Sequence start is configurable below.
+--// - Recipient packet: 22 01 <sequence> <usernameLength> <username>
+--// - Mail packet:      21 01 <sequence> <recipientUserId as little-endian f64> ...
+--// - Each fruit table entry inside the mail packet still begins with 1C.
+--// - Sequence start remains configurable below.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -2565,13 +2567,17 @@ local FRUIT_VALUE_ATTRIBUTE = "FruitValue"
 -- Server-enforced max.
 local MAX_FRUITS_PER_MAIL = 20
 
--- Fresh sample had recipient packet using 0x3E:
--- "\x1D\x01>\fglynoxven320"
-local DEFAULT_PACKET_SEQUENCE_START_HEX = "3E"
+-- Current successful manual sample:
+-- Recipient: 22 01 4D 0C "crevornex624"
+-- Fruit:     21 01 4E ...
+local MAIL_PACKET_FORMAT_VERSION = 2
+local RECIPIENT_PACKET_OPCODE = 0x22
+local FRUIT_MAIL_PACKET_OPCODE = 0x21
+local DEFAULT_PACKET_SEQUENCE_START_HEX = "4D"
 
 -- The packet sequence is accepted only in the 0x00-0x7F range.
--- Starting at 0x3E and consuming two bytes per mail reaches 0x7F after
--- 33 mails. Automatically roll back to the configured start before 0x80.
+-- Consume two bytes per mail and roll back to the configured start before
+-- attempting 0x80.
 local MAX_PACKET_SEQUENCE_BYTE = 0x7F
 
 local RECIPIENT_PACKET_DELAY = 0.12
@@ -3333,14 +3339,30 @@ seqLabel.TextColor3 = Color3.fromRGB(180, 180, 185)
 seqLabel.TextXAlignment = Enum.TextXAlignment.Left
 seqLabel.Parent = content
 
+local initialPacketSequence =
+	DEFAULT_PACKET_SEQUENCE_START_HEX
+
+if mailerCloudData
+	and tonumber(
+		mailerCloudData.mailPacketFormatVersion
+	) == MAIL_PACKET_FORMAT_VERSION
+	and (
+		type(mailerCloudData.packetSequence) == "string"
+		or type(mailerCloudData.packetSequence) == "number"
+	)
+then
+	initialPacketSequence =
+		tostring(mailerCloudData.packetSequence)
+end
+
 local seqBox = Instance.new("TextBox")
 seqBox.Name = "SeqBox"
 seqBox.Size = UDim2.fromOffset(38, 24)
 seqBox.Position = UDim2.fromOffset(30, 114)
 seqBox.BackgroundColor3 = Color3.fromRGB(36, 36, 42)
 seqBox.BorderSizePixel = 0
-seqBox.Text = mailerCloudData and tostring(mailerCloudData.packetSequence or DEFAULT_PACKET_SEQUENCE_START_HEX) or DEFAULT_PACKET_SEQUENCE_START_HEX
-seqBox.PlaceholderText = "3E"
+seqBox.Text = initialPacketSequence
+seqBox.PlaceholderText = "4D"
 seqBox.Font = Enum.Font.Code
 seqBox.TextSize = 11
 seqBox.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -5554,7 +5576,11 @@ local function buildRecipientPacket(username, packetByte)
 	end
 
 	return buffer.fromstring(
-		string.char(0x1D, 0x01, packetByte)
+		string.char(
+			RECIPIENT_PACKET_OPCODE,
+			0x01,
+			packetByte
+		)
 		.. string.char(#username)
 		.. username
 	)
@@ -5594,7 +5620,11 @@ local function buildFruitMailPacket(itemKeys, packetByte, recipientUserId)
 	end
 
 	local packet =
-		string.char(0x1C, 0x01, packetByte)
+		string.char(
+			FRUIT_MAIL_PACKET_OPCODE,
+			0x01,
+			packetByte
+		)
 		.. recipientBytes
 		.. string.char(0x1C, 0x05, 0x01)
 
@@ -6813,7 +6843,9 @@ end
 
 local function buildMailerCloudSettings()
 	return {
-		version = 1,
+		version = 2,
+		mailPacketFormatVersion =
+			MAIL_PACKET_FORMAT_VERSION,
 		targetMode = targetMode,
 		recipients = recipientBox.Text,
 		valueTarget = targetBox.Text,
@@ -6856,8 +6888,19 @@ _G.TEBHubCloudSections.Mailer = {
 			targetBox.Text = tostring(data.valueTarget)
 		end
 
-		if type(data.packetSequence) == "string" or type(data.packetSequence) == "number" then
+		if tonumber(data.mailPacketFormatVersion)
+			== MAIL_PACKET_FORMAT_VERSION
+			and (
+				type(data.packetSequence) == "string"
+				or type(data.packetSequence) == "number"
+			)
+		then
 			seqBox.Text = tostring(data.packetSequence)
+		else
+			-- Migrate old 1D/1C packet settings to the current 22/21
+			-- protocol and its captured fresh-session sequence.
+			seqBox.Text =
+				DEFAULT_PACKET_SEQUENCE_START_HEX
 		end
 
 		local loadedFruitCount = math.floor(tonumber(data.fruitCount) or 0)
@@ -7326,7 +7369,21 @@ end)
 		.. "h tracker.",
 	Color3.fromRGB(170, 255, 170)
 )
-debugTrace("TEB Hub version: " .. tostring(TEB_HUB_VERSION))
+debugTrace(
+	"TEB Hub version: "
+		.. tostring(
+			_G.TEB_HUB_VERSION
+				or TEB_HUB_VERSION
+		)
+)
+debugTrace(
+	string.format(
+		"Mail packet format: recipient=%02X | fruit=%02X | defaultSeq=%s",
+		RECIPIENT_PACKET_OPCODE,
+		FRUIT_MAIL_PACKET_OPCODE,
+		DEFAULT_PACKET_SEQUENCE_START_HEX
+	)
+)
 debugTrace("Local player: " .. tostring(player and player.Name))
 debugTrace("GetUserIdFromNameAsync method: " .. tostring(Players.GetUserIdFromNameAsync))
 debugTrace("Clipboard function available: " .. tostring(type(setclipboard) == "function" or type(toclipboard) == "function"))
