@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.8.2"
+local TEB_HUB_VERSION = "1.8.3"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -2252,6 +2252,32 @@ masterButton.MouseButton1Click:Connect(function()
 	updateMasterButton()
 	updateToggleButton()
 	queueCloudSave()
+
+	-- Master ON means the Bloom module must also be restored by the hub
+	-- after rejoining. Save both scopes immediately so a quick rejoin does
+	-- not lose the user's latest choice.
+	if masterEnabled then
+		task.spawn(function()
+			saveCloudSettingsNow()
+		end)
+
+		if type(_G.TEBHubPersistModulePreference)
+			== "function"
+		then
+			local syncOk, syncError = pcall(
+				_G.TEBHubPersistModulePreference,
+				"Bloom",
+				true
+			)
+
+			if not syncOk then
+				warn(
+					"[Bloom] Failed syncing hub module preference:",
+					syncError
+				)
+			end
+		end
+	end
 end)
 
 toggleButton.MouseButton1Click:Connect(function()
@@ -9755,6 +9781,15 @@ local moduleGuiNames = {
 }
 
 local moduleBusy = {}
+
+-- A slow cloud response must never undo a module button the player already
+-- pressed during this session.
+local modulePreferenceTouched = {
+	Bloom = false,
+	Mailer = false,
+	AutoDrop = false,
+}
+
 local rejoinDelay = 150
 local rejoining = false
 local hubRunning = true
@@ -10835,6 +10870,35 @@ local function refreshModuleVisuals()
 	rejoinToggle.BackgroundColor3 = rejoinOn and Color3.fromRGB(42, 126, 69) or Color3.fromRGB(58, 59, 76)
 end
 
+local function persistBloomModuleDisabled()
+	local section = _G.TEBHubCloudSections
+		and _G.TEBHubCloudSections.Bloom
+
+	if not section
+		or type(section.Get) ~= "function"
+	then
+		return
+	end
+
+	local ok, data = pcall(section.Get)
+
+	if not ok or type(data) ~= "table" then
+		return
+	end
+
+	data.masterEnabled = false
+	data.enabled = false
+
+	-- Start an immediate save and also retain the normal queued fallback.
+	task.spawn(function()
+		tebSaveScopeNow("bloom", data)
+	end)
+
+	tebQueueSaveScope("bloom", function()
+		return data
+	end)
+end
+
 local function setModule(name, wanted)
 	if wanted then
 		local oldGuiName = moduleGuiNames[name]
@@ -10868,6 +10932,11 @@ local function setModule(name, wanted)
 		end
 	else
 		stopModule(name)
+
+		if name == "Bloom" then
+			persistBloomModuleDisabled()
+		end
+
 		clearHost(name)
 		setStatus(name .. " stopped.")
 	end
@@ -10875,9 +10944,39 @@ local function setModule(name, wanted)
 	queueHubCloudSave()
 end
 
+-- Bloom's inner Master toggle and the hub's module toggle are separate UI
+-- controls. This bridge makes Master ON persist Bloom=true in the hub scope
+-- without restarting an already running Bloom module.
+_G.TEBHubPersistModulePreference = function(name, wanted)
+	if not hubRunning then
+		return false, "Hub is no longer running."
+	end
+
+	if name ~= "Bloom" or wanted ~= true then
+		return false, "Only Bloom Master ON synchronization is supported."
+	end
+
+	modulePreferenceTouched.Bloom = true
+	moduleEnabled.Bloom = true
+	refreshModuleVisuals()
+	queueHubCloudSave()
+
+	-- Save immediately as well, because the player may rejoin before the
+	-- normal debounce finishes.
+	task.spawn(function()
+		tebSaveScopeNow(
+			"hub",
+			buildHubCloudSettings()
+		)
+	end)
+
+	return true
+end
+
 for name, data in pairs(dashboardCards) do
 	if name ~= "AutoRejoin" then
 		data.Toggle.MouseButton1Click:Connect(function()
+			modulePreferenceTouched[name] = true
 			setModule(name, not moduleEnabled[name])
 		end)
 		data.Open.MouseButton1Click:Connect(function()
@@ -10901,6 +11000,7 @@ end
 
 for name, button in pairs(pageEnableButtons) do
 	button.MouseButton1Click:Connect(function()
+		modulePreferenceTouched[name] = true
 		setModule(name, not moduleEnabled[name])
 	end)
 end
@@ -11056,50 +11156,162 @@ setStatus("TEB Hub v" .. TEB_HUB_VERSION .. " ready. Auto Rejoin and Optimizer s
 -- Load cloud settings in the background only after the hub is already usable.
 -- Optimizer and Auto Rejoin intentionally remain ON regardless of cloud values.
 task.spawn(function()
-	local cloudConfig, cloudSource, cloudError = tebLoadScope("hub")
+	local cloudConfig, cloudSource, cloudError =
+		tebLoadScope("hub")
 
 	if not hubRunning then
 		return
 	end
 
-	if type(cloudConfig) ~= "table" then
-		cloudSourceLabel.Text = "Loaded source: local defaults"
+	local hasHubConfig =
+		type(cloudConfig) == "table"
+
+	if not hasHubConfig then
+		cloudConfig = {}
+		loadedHubConfig = {}
+		loadedHubSource = "local-defaults"
+		cloudSourceLabel.Text =
+			"Loaded source: local defaults"
+
 		if cloudError then
-			setStatus("Cloud config unavailable; using hardcoded defaults.")
+			setStatus(
+				"Hub cloud config unavailable; checking Bloom settings separately."
+			)
 		end
-		return
+	else
+		loadedHubConfig = cloudConfig
+		loadedHubSource = cloudSource or "cloud"
+		cloudSourceLabel.Text =
+			"Loaded source: "
+			.. tostring(loadedHubSource)
 	end
 
-	loadedHubConfig = cloudConfig
-	loadedHubSource = cloudSource or "cloud"
-	cloudSourceLabel.Text = "Loaded source: " .. tostring(loadedHubSource)
-
 	-- These optional settings may be restored after startup without blocking it.
-	local savedDelay = tonumber(cloudConfig.RejoinDelay)
+	local savedDelay =
+		tonumber(cloudConfig.RejoinDelay)
+
 	if savedDelay then
-		rejoinDelay = math.clamp(math.floor(savedDelay), 0, 3600)
+		rejoinDelay = math.clamp(
+			math.floor(savedDelay),
+			0,
+			3600
+		)
 		delayBox.Text = tostring(rejoinDelay)
 	end
 
+	-- Older builds could save Bloom Master ON in the Bloom scope while the
+	-- hub scope still incorrectly contained Bloom=false. Recover from that
+	-- mismatch before deciding whether to start the module.
+	local bloomSavedConfig = nil
+	local bloomSavedSource = nil
+
+	if cloudConfig.Bloom ~= true then
+		local bloomLoadError
+		bloomSavedConfig,
+			bloomSavedSource,
+			bloomLoadError =
+				tebLoadScope("bloom")
+
+		if bloomLoadError then
+			warn(
+				"[TEB Hub] Bloom recovery load failed:",
+				bloomLoadError
+			)
+		end
+	end
+
+	local recoverBloomFromMaster =
+		type(bloomSavedConfig) == "table"
+		and bloomSavedConfig.masterEnabled == true
+
 	-- Restore Bloom, Mailer, and Auto Drop preferences asynchronously.
-	for _, name in ipairs({"Bloom", "Mailer", "AutoDrop"}) do
-		local wanted = cloudConfig[name] == true
-		if wanted ~= moduleEnabled[name] then
+	for _, name in ipairs({
+		"Bloom",
+		"Mailer",
+		"AutoDrop",
+	}) do
+		local wanted =
+			cloudConfig[name] == true
+
+		if name == "Bloom"
+			and recoverBloomFromMaster
+		then
+			wanted = true
+		end
+
+		-- Do not allow a late cloud response to reverse a button the player
+		-- already pressed after joining.
+		if not modulePreferenceTouched[name]
+			and wanted ~= moduleEnabled[name]
+		then
 			setModule(name, wanted)
 		end
 	end
 
+	-- A recovered Master ON repairs the hub scope for future rejoins.
+	if recoverBloomFromMaster then
+		moduleEnabled.Bloom = true
+		refreshModuleVisuals()
+		queueHubCloudSave()
+
+		task.spawn(function()
+			tebSaveScopeNow(
+				"hub",
+				buildHubCloudSettings()
+			)
+		end)
+	end
+
 	-- Optimizer remains hardcoded ON. Auto Rejoin starts ON immediately,
-	-- then follows the player's saved cloud preference.
+	-- then follows the player's saved cloud preference when one exists.
 	moduleEnabled.Optimizer = true
-	moduleEnabled.AutoRejoin = cloudConfig.AutoRejoin ~= false
+
+	if hasHubConfig then
+		moduleEnabled.AutoRejoin =
+			cloudConfig.AutoRejoin ~= false
+	end
+
 	if not moduleEnabled.AutoRejoin then
 		rejoining = false
 	end
+
 	refreshModuleVisuals()
-	setStatus(
-		"Cloud config loaded. Auto Rejoin: "
-			.. (moduleEnabled.AutoRejoin and "ON" or "OFF")
-			.. "."
-	)
+
+	if recoverBloomFromMaster then
+		setStatus(
+			"Bloom module restored from saved Master ON"
+				.. (
+					bloomSavedSource
+					and " (" .. tostring(bloomSavedSource) .. ")"
+					or ""
+				)
+				.. ". Auto Rejoin: "
+				.. (
+					moduleEnabled.AutoRejoin
+					and "ON"
+					or "OFF"
+				)
+				.. "."
+		)
+	elseif hasHubConfig then
+		setStatus(
+			"Cloud config loaded. Auto Rejoin: "
+				.. (
+					moduleEnabled.AutoRejoin
+					and "ON"
+					or "OFF"
+				)
+				.. "."
+		)
+	else
+		setStatus(
+			"Using local module defaults. Auto Rejoin: "
+				.. (
+					moduleEnabled.AutoRejoin
+					and "ON"
+					or "OFF"
+				)
+				.. "."
+		)
+	end
 end)
