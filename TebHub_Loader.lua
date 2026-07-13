@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.8.7"
+local TEB_HUB_VERSION = "1.8.8"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -6973,6 +6973,96 @@ local function sendPlans(plans, reason)
 
 						batch = recalculatedBatch
 
+						local finalValueBatchTrimmed = false
+						local remainingTargetBeforeSend = nil
+						local preTrimTotal =
+							recalculatedTotal
+
+						if mode == "Value" then
+							remainingTargetBeforeSend =
+								math.max(
+									0,
+									targetValue - sentTotal
+								)
+
+							-- A previous prepared batch may already have completed
+							-- the target. Never send another queued packet.
+							if remainingTargetBeforeSend <= 0 then
+								addLog(
+									"Target was already reached. Discarding remaining prepared batches.",
+									Color3.fromRGB(170, 255, 170)
+								)
+								break
+							end
+
+							-- Recalculation can change the outgoing value. When
+							-- this packet is enough to finish the target, solve
+							-- the <=20-fruit subset again using the fresh values.
+							if recalculatedTotal
+								>= remainingTargetBeforeSend
+							then
+								local trimmedBatch,
+									trimmedTotal,
+									trimReason =
+										selectClosestAtOrOverTarget(
+											recalculatedBatch,
+											remainingTargetBeforeSend
+										)
+
+								if trimmedBatch
+									and #trimmedBatch > 0
+								then
+									finalValueBatchTrimmed =
+										#trimmedBatch
+											< #recalculatedBatch
+										or math.abs(
+											trimmedTotal
+												- recalculatedTotal
+										) > 0.5
+
+									batch = trimmedBatch
+									recalculatedTotal =
+										trimmedTotal
+
+									addLog(
+										string.format(
+											"Final target optimization | remaining %s | batch %s → %s | excess %s | %d → %d fruit(s) | %s",
+											formatShortNumber(
+												remainingTargetBeforeSend
+											),
+											formatShortNumber(
+												preTrimTotal
+											),
+											formatShortNumber(
+												recalculatedTotal
+											),
+											formatShortNumber(
+												math.max(
+													0,
+													recalculatedTotal
+														- remainingTargetBeforeSend
+												)
+											),
+											#recalculatedBatch,
+											#batch,
+											tostring(trimReason)
+										),
+										finalValueBatchTrimmed
+											and Color3.fromRGB(
+												255,
+												220,
+												120
+											)
+											or Color3.fromRGB(
+												170,
+												220,
+												255
+											)
+									)
+								end
+							end
+						end
+
 						local itemKeys =
 							getItemKeysFromBatch(batch)
 
@@ -6984,13 +7074,20 @@ local function sendPlans(plans, reason)
 
 						if mailerRuntime.FullBatchOnly
 							and #itemKeys ~= MAX_FRUITS_PER_MAIL
+							and not (
+								mode == "Value"
+								and finalValueBatchTrimmed
+								and remainingTargetBeforeSend
+								and recalculatedTotal
+									>= remainingTargetBeforeSend
+							)
 						then
 							stoppedReason = string.format(
 								"full-20 mode rejected partial batch (%d/20)",
 								#itemKeys
 							)
 							addLog(
-								"Full-20 mode will not send a partial batch. Waiting for inventory refill.",
+								"Full-20 mode will not send this partial progress batch. A trimmed partial packet is allowed only when it finishes the value target.",
 								Color3.fromRGB(255, 220, 120)
 							)
 							break
@@ -7179,6 +7276,35 @@ local function sendPlans(plans, reason)
 						end
 
 						refreshUI()
+
+						if mode == "Value"
+							and sentTotal >= targetValue
+						then
+							local finalExcess =
+								math.max(
+									0,
+									sentTotal - targetValue
+								)
+
+							addLog(
+								string.format(
+									"Value target completed. Requested %s | sent %s | unavoidable excess %s. Remaining prepared batches were cancelled.",
+									formatShortNumber(
+										targetValue
+									),
+									formatShortNumber(
+										sentTotal
+									),
+									formatShortNumber(
+										finalExcess
+									)
+								),
+								Color3.fromRGB(170, 255, 170)
+							)
+
+							break
+						end
+
 						task.wait(MAIL_BATCH_DELAY)
 
 					end
@@ -7189,7 +7315,32 @@ local function sendPlans(plans, reason)
 					if mode == "Fruit" then
 						addLog(string.format("%s fruit-count target reached: %d fruits | Base %s.", username, sentCount, formatShortNumber(sentTotal)), Color3.fromRGB(170, 255, 170))
 					else
-						addLog(username .. " value target reached: " .. formatShortNumber(sentTotal) .. " sent.", Color3.fromRGB(170, 255, 170))
+						local excess =
+							math.max(
+								0,
+								sentTotal - targetValue
+							)
+
+						addLog(
+							string.format(
+								"%s value target reached | requested %s | sent %s | excess %s.",
+								username,
+								formatShortNumber(
+									targetValue
+								),
+								formatShortNumber(
+									sentTotal
+								),
+								formatShortNumber(
+									excess
+								)
+							),
+							Color3.fromRGB(
+								170,
+								255,
+								170
+							)
+						)
 					end
 				else
 					addLog(username .. " stopped. Reason: " .. tostring(stoppedReason), Color3.fromRGB(255, 220, 120))
@@ -7725,7 +7876,7 @@ task.defer(function()
 end)
 
 	addLog(
-		"Loaded Mailer with strict 1x values, immediate selected-batch recalculation before every send, and a result-based 0/50 counter.",
+		"Loaded Mailer with strict 1x values, pre-send recalculation, final-packet target optimization, and immediate cancellation of excess prepared batches.",
 		Color3.fromRGB(170, 255, 170)
 	)
 debugTrace(
