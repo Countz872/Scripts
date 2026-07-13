@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.8.3"
+local TEB_HUB_VERSION = "1.8.7"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -35,6 +35,21 @@ local TEB_CLOUD_ENDPOINT = "https://scripts-gag2.tucodanj.workers.dev"
 local TEB_USER_KEY = TEB_STABLE_USER_KEY
 local TEB_CLOUD_DEBOUNCE = 1.25
 local tebSaveRevisions = {}
+
+-- A reset marker makes the player-specific scope behave as though it does
+-- not exist, allowing the global default (or hardcoded defaults) to load.
+local TEB_RESET_MARKER_FIELD =
+	"__tebResetPlayerSave"
+local TEB_RESET_SCOPES = {
+	"hub",
+	"bloom",
+	"mailer",
+	"autodrop",
+}
+
+-- Once a reset succeeds, block all normal autosaves until the player
+-- rejoins so stale runtime values cannot overwrite the reset markers.
+local tebConfigResetLocked = false
 
 local function tebRequestFunction()
 	return (syn and syn.request)
@@ -100,6 +115,42 @@ local function tebLoadScope(scope)
 		return nil, "error", result
 	end
 
+	-- A reset marker intentionally ignores the player-specific value and
+	-- performs a second load with a reserved key that has no player save.
+	-- The Worker then returns the global default, or no data when no default
+	-- exists. This provides a true reset without requiring a new Worker API.
+	if result.source == "user"
+		and type(result.data) == "table"
+		and result.data[TEB_RESET_MARKER_FIELD] == true
+	then
+		local defaultLookupKey =
+			"TEBHubDefaultLookup-v1-"
+			.. tostring(scope)
+
+		local defaultOk, defaultResult =
+			tebCloudCall(
+				"load",
+				scope,
+				nil,
+				defaultLookupKey
+			)
+
+		if not defaultOk then
+			return nil,
+				"reset-marker",
+				defaultResult
+		end
+
+		if defaultResult.source == "default"
+			and type(defaultResult.data) == "table"
+		then
+			return defaultResult.data,
+				"default-after-player-reset"
+		end
+
+		return nil, "none-after-player-reset"
+	end
+
 	-- Previous Bloom releases used a different stable user key.
 	-- Check it before accepting the global default, then migrate it forward.
 	if scope == "bloom" and result.source ~= "user" then
@@ -120,11 +171,21 @@ local function tebLoadScope(scope)
 end
 
 local function tebSaveScopeNow(scope, data)
+	if tebConfigResetLocked then
+		return false,
+			"Player config was reset; rejoin before saving new settings."
+	end
+
 	return tebCloudCall("save", scope, data)
 end
 
 local function tebQueueSaveScope(scope, getter)
-	tebSaveRevisions[scope] = (tebSaveRevisions[scope] or 0) + 1
+	if tebConfigResetLocked then
+		return
+	end
+
+	tebSaveRevisions[scope] =
+		(tebSaveRevisions[scope] or 0) + 1
 	local revision = tebSaveRevisions[scope]
 
 	task.delay(TEB_CLOUD_DEBOUNCE, function()
@@ -142,11 +203,50 @@ local function tebSetDefaultScope(scope, data)
 	return tebCloudCall("set-default", scope, data)
 end
 
+local function tebResetPlayerSaveSettings()
+	-- Invalidate every queued debounce before writing reset markers.
+	for _, scope in ipairs(TEB_RESET_SCOPES) do
+		tebSaveRevisions[scope] =
+			(tebSaveRevisions[scope] or 0) + 1
+	end
+
+	tebConfigResetLocked = true
+
+	local marker = {
+		[TEB_RESET_MARKER_FIELD] = true,
+		resetSchemaVersion = 1,
+		resetAt = os.time(),
+		resetByHubVersion = TEB_HUB_VERSION,
+		playerUserId = tostring(player.UserId),
+	}
+
+	local failures = {}
+
+	for _, scope in ipairs(TEB_RESET_SCOPES) do
+		-- Use tebCloudCall directly because normal saves are deliberately
+		-- locked while a reset is pending.
+		local ok, result =
+			tebCloudCall("save", scope, marker)
+
+		if not ok then
+			table.insert(
+				failures,
+				scope .. ": " .. tostring(result)
+			)
+		end
+	end
+
+	return #failures == 0, failures
+end
+
 _G.TEBCloudLoadScope = tebLoadScope
 _G.TEBCloudSaveScope = tebSaveScopeNow
 _G.TEBCloudQueueSaveScope = tebQueueSaveScope
 _G.TEBCloudSetDefaultScope = tebSetDefaultScope
-_G.TEBHubCloudSections = _G.TEBHubCloudSections or {}
+_G.TEBCloudResetPlayerSettings =
+	tebResetPlayerSaveSettings
+_G.TEBHubCloudSections =
+	_G.TEBHubCloudSections or {}
 
 local MODULE_SOURCES = {
 	Bloom = [=[
@@ -2652,7 +2752,15 @@ local function getMailLimitState()
 	return used, math.max(0, mailLimitCount - used)
 end
 
-local FALLBACK_SELL_MULTI = 1
+-- Strict 1x value policy:
+-- Base value is always FruitValue divided by the matching stock-card
+-- multiplier. Missing cards are unresolved; they are never treated as 1.00x.
+local STRICT_ONE_X_VALUE_MODE = true
+
+-- Re-read only the selected fruits immediately before each mail packet.
+-- This catches FruitValue changes that happen after selection or during the
+-- normal mail cooldown without repeatedly recalculating the whole inventory.
+local RECALCULATE_SELECTED_BATCH_BEFORE_SEND = true
 
 -- Hypno Bloom support.
 -- Hypno Bloom uses the same base-kg behavior as Moon Bloom, but its base price is 9500.
@@ -2664,7 +2772,8 @@ local HYPNO_BLOOM_USES_MOON_BLOOM_MULTIPLIER = false
 -- If set, Hypno Bloom can fallback to: 9500 * (kg / MOON_BLOOM_BASE_KG)^2
 local MOON_BLOOM_BASE_KG = nil
 
--- Existing fruits do not recalculate once cached.
+-- FruitValue and stock multipliers may settle after inventory/mail claim.
+-- Recalculate on rescans and FruitValue changes.
 local RECALCULATE_EXISTING_FRUITS = true
 
 -- Safe mode:
@@ -2780,8 +2889,12 @@ local progressRows = {}
 
 local lastStockCardCount = 0
 local lastStatus = "loaded"
+local currentStockMultiplierMap = {}
+local unresolvedValueLogCount = 0
+local MAX_UNRESOLVED_VALUE_LOGS = 6
 
 local refreshUI
+local rescanInventoryNow
 local addLog
 local addHistory
 local updateTargetFormattedLabel
@@ -4866,6 +4979,7 @@ local function buildStockMultiplierMap()
 	if not scrollingFrame then
 		lastStockCardCount = 0
 		lastStatus = reason
+		currentStockMultiplierMap = map
 		return map
 	end
 
@@ -4896,7 +5010,11 @@ local function buildStockMultiplierMap()
 	end
 
 	lastStockCardCount = cardCount
-	lastStatus = cardCount > 0 and "stock multipliers loaded" or "no readable stock cards"
+	lastStatus =
+		cardCount > 0
+		and "stock multipliers loaded"
+		or "no readable stock cards"
+	currentStockMultiplierMap = map
 
 	return map
 end
@@ -4930,7 +5048,7 @@ local function findMultiplierForFruitName(fruitName, multiplierMap)
 		end
 	end
 
-	return FALLBACK_SELL_MULTI, "fallback"
+	return nil, "missing matching stock card"
 end
 
 local function getSpecialBaseValueOverride(instance, fruitName, currentValue, sellMulti, multiSource)
@@ -5101,7 +5219,11 @@ local function isHarvestedFruitInstance(instance)
 	return getAttributeNumber(instance, FRUIT_VALUE_ATTRIBUTE) ~= nil
 end
 
-local function cacheFruitOnce(instance, reason)
+local function cacheFruitOnce(
+	instance,
+	reason,
+	suppressRefresh
+)
 	if not running then
 		return
 	end
@@ -5127,17 +5249,70 @@ local function cacheFruitOnce(instance, reason)
 		return
 	end
 
-	local itemKey, itemKeySource = getItemKeyFromInstance(instance)
-	local multiplierMap = buildStockMultiplierMap()
-	local fruitName = getDisplayNameFromInstance(instance)
-	local sellMulti, multiSource = findMultiplierForFruitName(fruitName, multiplierMap)
+	local itemKey, itemKeySource =
+		getItemKeyFromInstance(instance)
 
-	local baseValue = fruitValue / sellMulti
-	local specialBaseValue, specialSource = getSpecialBaseValueOverride(instance, fruitName, fruitValue, sellMulti, multiSource)
+	local multiplierMap =
+		currentStockMultiplierMap
+
+	if next(multiplierMap) == nil then
+		multiplierMap =
+			buildStockMultiplierMap()
+	end
+
+	local fruitName =
+		getDisplayNameFromInstance(instance)
+	local sellMulti, multiSource =
+		findMultiplierForFruitName(
+			fruitName,
+			multiplierMap
+		)
+
+	local baseValue = 0
+	local valueResolved = false
+	local valueSource =
+		multiSource or "missing multiplier"
+
+	if sellMulti and sellMulti > 0 then
+		baseValue = fruitValue / sellMulti
+		valueResolved = true
+		valueSource =
+			"FruitValue / "
+			.. tostring(sellMulti)
+			.. " ("
+			.. tostring(multiSource)
+			.. ")"
+	end
+
+	local specialBaseValue, specialSource =
+		getSpecialBaseValueOverride(
+			instance,
+			fruitName,
+			fruitValue,
+			sellMulti,
+			multiSource
+		)
 
 	if specialBaseValue then
 		baseValue = specialBaseValue
-		multiSource = specialSource
+		valueResolved = true
+		valueSource = specialSource
+	end
+
+	if not valueResolved
+		and unresolvedValueLogCount
+			< MAX_UNRESOLVED_VALUE_LOGS
+	then
+		unresolvedValueLogCount += 1
+
+		if addLog then
+			addLog(
+				"1x unresolved for "
+					.. tostring(fruitName)
+					.. ": matching stock multiplier was not found. This fruit will not be used in Value mode.",
+				Color3.fromRGB(255, 180, 100)
+			)
+		end
 	end
 
 	fruitCache[instance] = {
@@ -5148,11 +5323,13 @@ local function cacheFruitOnce(instance, reason)
 		currentValue = fruitValue,
 		sellMulti = sellMulti,
 		baseValue = baseValue,
+		valueResolved = valueResolved,
+		valueSource = valueSource,
 		multiSource = multiSource,
 		reason = reason or "cached",
 	}
 
-	if refreshUI then
+	if refreshUI and not suppressRefresh then
 		refreshUI()
 	end
 end
@@ -5263,6 +5440,13 @@ local function getCachedFruitsArray(onlyMailable, excludeSent)
 				canUse = false
 			end
 
+			if onlyMailable
+				and targetMode == "Value"
+				and data.valueResolved ~= true
+			then
+				canUse = false
+			end
+
 			if excludeSent and data.itemKey and sentKeySet[data.itemKey] then
 				canUse = false
 			end
@@ -5276,10 +5460,47 @@ local function getCachedFruitsArray(onlyMailable, excludeSent)
 	end
 
 	table.sort(fruits, function(a, b)
-		return a.baseValue > b.baseValue
+		return (a.baseValue or 0)
+			> (b.baseValue or 0)
 	end)
 
 	return fruits
+end
+
+local function getUnresolvedValueFruits(
+	onlyMailable,
+	excludeSent
+)
+	local unresolved = {}
+
+	for instance, data in pairs(fruitCache) do
+		if instance
+			and instance.Parent
+			and isTrackedInventoryInstance(instance)
+			and data.valueResolved ~= true
+		then
+			local canUse = true
+
+			if onlyMailable
+				and not data.itemKey
+			then
+				canUse = false
+			end
+
+			if excludeSent
+				and data.itemKey
+				and sentKeySet[data.itemKey]
+			then
+				canUse = false
+			end
+
+			if canUse then
+				table.insert(unresolved, data)
+			end
+		end
+	end
+
+	return unresolved
 end
 
 --// TARGET SELECTION
@@ -5603,6 +5824,206 @@ local function getItemKeysFromBatch(batch)
 	return keys
 end
 
+local function findCurrentFruitDataForSend(
+	fruit
+)
+	if not fruit then
+		return nil
+	end
+
+	local instance = fruit.instance
+
+	if instance
+		and instance.Parent
+		and isTrackedInventoryInstance(instance)
+		and isHarvestedFruitInstance(instance)
+	then
+		return instance
+	end
+
+	local wantedKey = fruit.itemKey
+
+	if wantedKey then
+		for cachedInstance, cachedData in pairs(
+			fruitCache
+		) do
+			if cachedData.itemKey == wantedKey
+				and cachedInstance
+				and cachedInstance.Parent
+				and isTrackedInventoryInstance(
+					cachedInstance
+				)
+				and isHarvestedFruitInstance(
+					cachedInstance
+				)
+			then
+				return cachedInstance
+			end
+		end
+
+		for _, root in ipairs(getTrackedRoots()) do
+			for _, object in ipairs(
+				root:GetDescendants()
+			) do
+				if isHarvestedFruitInstance(object) then
+					local objectKey =
+						getItemKeyFromInstance(object)
+
+					if objectKey == wantedKey then
+						connectInstance(object)
+						return object
+					end
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+local function recalculateSelectedBatchBeforeSend(
+	batch,
+	mode
+)
+	if not RECALCULATE_SELECTED_BATCH_BEFORE_SEND then
+		return batch,
+			getSelectionTotal(batch),
+			0,
+			0,
+			nil
+	end
+
+	-- Build one consistent multiplier snapshot for this exact outgoing batch.
+	buildStockMultiplierMap()
+
+	local refreshedBatch = {}
+	local unresolvedCount = 0
+	local changedCount = 0
+	local missingCount = 0
+	local oldTotal = getSelectionTotal(batch)
+
+	for _, oldFruit in ipairs(batch) do
+		local currentInstance =
+			findCurrentFruitDataForSend(oldFruit)
+
+		if not currentInstance then
+			missingCount += 1
+			continue
+		end
+
+		local oldValue =
+			tonumber(oldFruit.baseValue) or 0
+		local oldCurrent =
+			tonumber(oldFruit.currentValue) or 0
+		local oldMulti =
+			tonumber(oldFruit.sellMulti)
+
+		cacheFruitOnce(
+			currentInstance,
+			"immediate pre-send recalculation",
+			true
+		)
+
+		local freshFruit =
+			fruitCache[currentInstance]
+
+		if freshFruit then
+			table.insert(
+				refreshedBatch,
+				freshFruit
+			)
+
+			if freshFruit.valueResolved ~= true then
+				unresolvedCount += 1
+			end
+
+			local newValue =
+				tonumber(freshFruit.baseValue)
+				or 0
+			local newCurrent =
+				tonumber(freshFruit.currentValue)
+				or 0
+			local newMulti =
+				tonumber(freshFruit.sellMulti)
+
+			if math.abs(newValue - oldValue) > 0.5
+				or math.abs(
+					newCurrent - oldCurrent
+				) > 0.5
+				or newMulti ~= oldMulti
+			then
+				changedCount += 1
+			end
+		else
+			missingCount += 1
+		end
+	end
+
+	local newTotal =
+		getSelectionTotal(refreshedBatch)
+
+	if refreshUI then
+		refreshUI()
+	end
+
+	if #refreshedBatch == 0 then
+		return nil,
+			0,
+			unresolvedCount,
+			changedCount,
+			"all selected fruits disappeared before sending"
+	end
+
+	if missingCount > 0 then
+		return nil,
+			newTotal,
+			unresolvedCount,
+			changedCount,
+			string.format(
+				"%d selected fruit(s) disappeared before sending",
+				missingCount
+			)
+	end
+
+	if mode == "Value"
+		and unresolvedCount > 0
+	then
+		return nil,
+			newTotal,
+			unresolvedCount,
+			changedCount,
+			string.format(
+				"%d selected fruit(s) lost their matching stock multiplier",
+				unresolvedCount
+			)
+	end
+
+	addLog(
+		string.format(
+			"Pre-send recalculation | %d fruit(s) | changed %d | 1x %s → %s%s",
+			#refreshedBatch,
+			changedCount,
+			formatShortNumber(oldTotal),
+			formatShortNumber(newTotal),
+			unresolvedCount > 0
+				and (
+					" | unresolved "
+					.. tostring(unresolvedCount)
+				)
+				or ""
+		),
+		changedCount > 0
+			and Color3.fromRGB(255, 220, 120)
+			or Color3.fromRGB(170, 220, 255)
+	)
+
+	return refreshedBatch,
+		newTotal,
+		unresolvedCount,
+		changedCount,
+		nil
+end
+
 local function markFruitsAsSent(fruits)
 	for _, fruit in ipairs(fruits) do
 		if fruit.itemKey then
@@ -5739,25 +6160,29 @@ refreshUI = function()
 
 	local totalCurrent = 0
 	local totalBase = 0
-	local fallbackCount = 0
+	local resolvedCount = 0
+	local unresolvedCount = 0
 
 	for _, fruit in ipairs(fruits) do
-		totalCurrent += fruit.currentValue
-		totalBase += fruit.baseValue
+		totalCurrent += fruit.currentValue or 0
 
-		if fruit.multiSource == "fallback" then
-			fallbackCount += 1
+		if fruit.valueResolved == true then
+			totalBase += fruit.baseValue or 0
+			resolvedCount += 1
+		else
+			unresolvedCount += 1
 		end
 	end
 
 	statsLabel.Text = string.format(
-		"Fruits: %d | Mailable unsent: %d | Base: %s | Current: %s | Stock: %d | Fallback: %d",
+		"Fruits: %d | Mailable: %d | 1x resolved: %s (%d) | Raw current: %s | Unresolved: %d | Stock cards: %d",
 		#fruits,
 		#mailable,
 		formatShortNumber(totalBase),
+		resolvedCount,
 		formatShortNumber(totalCurrent),
-		lastStockCardCount,
-		fallbackCount
+		unresolvedCount,
+		lastStockCardCount
 	)
 end
 
@@ -5855,12 +6280,47 @@ local function makePreview()
 	local targetFruitCount = targetMode == "Fruit" and getDefaultFruitTargetCount() or nil
 
 	if #recipients == 0 then
-		previewLabel.Text = "Preview: enter at least one username."
-		previewLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+		previewLabel.Text =
+			"Preview: enter at least one username."
+		previewLabel.TextColor3 =
+			Color3.fromRGB(255, 220, 120)
 		return nil
 	end
 
-	local available = getCachedFruitsArray(true, true)
+	-- Rebuild the stock map once, then recalculate every fruit against the
+	-- same multiplier snapshot.
+	if rescanInventoryNow then
+		rescanInventoryNow()
+	end
+
+	if targetMode == "Value" then
+		local unresolved =
+			getUnresolvedValueFruits(
+				true,
+				true
+			)
+
+		if #unresolved > 0 then
+			previewLabel.Text = string.format(
+				"Value preview blocked: %d mailable fruit(s) have no matching stock multiplier. Wait for FruitStockPrice cards to load, then press Rescan.",
+				#unresolved
+			)
+			previewLabel.TextColor3 =
+				Color3.fromRGB(255, 120, 120)
+
+			addLog(
+				"Value-mode send blocked because "
+					.. tostring(#unresolved)
+					.. " fruit(s) have unresolved 1x values. No x1 fallback was used.",
+				Color3.fromRGB(255, 120, 120)
+			)
+
+			return nil
+		end
+	end
+
+	local available =
+		getCachedFruitsArray(true, true)
 	local tempUsed = {}
 	local previewPlans = {}
 	local totalSelected = 0
@@ -6064,7 +6524,7 @@ local function waitMailCooldown(seconds, nextLabel)
 	end
 end
 
-local function rescanInventoryNow()
+rescanInventoryNow = function()
 	buildStockMultiplierMap()
 
 	for _, root in ipairs(getTrackedRoots()) do
@@ -6451,10 +6911,76 @@ local function sendPlans(plans, reason)
 
 						-- The 0/50 counter is display-only. Even at 50/50,
 						-- always send a real probe to the server.
-						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
-						if needsCooldownBeforeNextMail then waitMailCooldown(MAIL_COOLDOWN_SECONDS, username .. " next mail") end
-						local itemKeys = getItemKeysFromBatch(batch)
-						if #itemKeys == 0 then stoppedReason = "selected batch had no item keys" break end
+						if needsCooldownBeforeNextMail then
+							waitMailCooldown(
+								MAIL_COOLDOWN_SECONDS,
+								username .. " next mail"
+							)
+						end
+
+						-- Values can change while waiting for the normal mail
+						-- cooldown. Re-read only this outgoing batch now.
+						local recalculatedBatch,
+							recalculatedTotal,
+							unresolvedSelected,
+							changedSelected,
+							recalculationError =
+								recalculateSelectedBatchBeforeSend(
+									batch,
+									mode
+								)
+
+						if not recalculatedBatch then
+							stoppedReason =
+								"pre-send recalculation failed: "
+								.. tostring(
+									recalculationError
+								)
+
+							addLog(
+								"Mail stopped before packets were sent: "
+									.. tostring(
+										recalculationError
+									)
+									.. ". Press Rescan after the stock cards and inventory finish loading.",
+								Color3.fromRGB(255, 120, 120)
+							)
+
+							if debugTrace then
+								debugTrace(
+									"PRE-SEND RECALCULATION BLOCKED"
+										.. " | user="
+										.. tostring(username)
+										.. " | mode="
+										.. tostring(mode)
+										.. " | unresolved="
+										.. tostring(
+											unresolvedSelected
+										)
+										.. " | changed="
+										.. tostring(
+											changedSelected
+										)
+										.. " | error="
+										.. tostring(
+											recalculationError
+										)
+								)
+							end
+
+							break
+						end
+
+						batch = recalculatedBatch
+
+						local itemKeys =
+							getItemKeysFromBatch(batch)
+
+						if #itemKeys == 0 then
+							stoppedReason =
+								"selected batch had no item keys"
+							break
+						end
 
 						if mailerRuntime.FullBatchOnly
 							and #itemKeys ~= MAX_FRUITS_PER_MAIL
@@ -6497,9 +7023,22 @@ local function sendPlans(plans, reason)
 						end
 
 						packetByte = nextPacketByte
-						local batchValue = getSelectionTotal(batch)
+						local batchValue =
+							recalculatedTotal
 
-						addLog(string.format("%s mail %d | %d fruit(s) | Base %s | seq %02X/%02X", username, sentMails + 1, #itemKeys, formatShortNumber(batchValue), recipientByte, fruitPacketByte))
+						addLog(
+							string.format(
+								"%s mail %d | %d fruit(s) | Fresh 1x %s | seq %02X/%02X",
+								username,
+								sentMails + 1,
+								#itemKeys,
+								formatShortNumber(
+									batchValue
+								),
+								recipientByte,
+								fruitPacketByte
+							)
+						)
 						Event:FireServer(buildRecipientPacket(username, recipientByte))
 						task.wait(RECIPIENT_PACKET_DELAY)
 						Event:FireServer(buildFruitMailPacket(itemKeys, fruitPacketByte, userId))
@@ -6542,7 +7081,10 @@ local function sendPlans(plans, reason)
 							break
 						end
 
-						local verifiedValue = getSelectionTotal(removedFruits)
+						-- removedFruits contains the same freshly recalculated
+						-- entries used to construct this outgoing packet.
+						local verifiedValue =
+							getSelectionTotal(removedFruits)
 
 						needsCooldownBeforeNextMail = true
 						sentMails += 1
@@ -7119,6 +7661,8 @@ rescanButton.MouseButton1Click:Connect(function()
 	connectedInstances = {}
 	connectedRoots = {}
 	sentKeySet = {}
+	currentStockMultiplierMap = {}
+	unresolvedValueLogCount = 0
 
 	buildStockMultiplierMap()
 
@@ -7128,7 +7672,9 @@ rescanButton.MouseButton1Click:Connect(function()
 	end
 
 	refreshUI()
-	addLog("Rescanned with stable scanner. Cache/sent memory cleared; values can update safely.")
+	addLog(
+		"Rescanned in strict 1x mode. Values use FruitValue divided by a matching stock-card multiplier; missing multipliers remain unresolved."
+	)
 end)
 
 -- Remote response logger if the game replies on the same RemoteEvent.
@@ -7179,7 +7725,7 @@ task.defer(function()
 end)
 
 	addLog(
-		"Loaded Mailer with a result-based 0/50 counter. The counter never blocks sends and has no reset timer.",
+		"Loaded Mailer with strict 1x values, immediate selected-batch recalculation before every send, and a result-based 0/50 counter.",
 		Color3.fromRGB(170, 255, 170)
 	)
 debugTrace(
@@ -10590,7 +11136,7 @@ rejoinInfo.Parent = rejoinPanel
 
 -- Settings page
 local settingsPage = pages.Settings
-local cloudPanel = makePanel(settingsPage, UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 210))
+local cloudPanel = makePanel(settingsPage, UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 272))
 
 local cloudTitle = Instance.new("TextLabel")
 cloudTitle.Size = UDim2.new(1, -24, 0, 30)
@@ -10616,8 +11162,23 @@ cloudText.TextXAlignment = Enum.TextXAlignment.Left
 cloudText.TextYAlignment = Enum.TextYAlignment.Top
 cloudText.Parent = cloudPanel
 
-local defaultButton = makeActionButton(cloudPanel, "Set Current Settings as Default", UDim2.fromOffset(12, 130), UDim2.fromOffset(270, 38))
-defaultButton.BackgroundColor3 = Color3.fromRGB(112, 77, 34)
+local defaultButton = makeActionButton(
+	cloudPanel,
+	"Set Current Settings as Default",
+	UDim2.fromOffset(12, 130),
+	UDim2.fromOffset(270, 38)
+)
+defaultButton.BackgroundColor3 =
+	Color3.fromRGB(112, 77, 34)
+
+local resetPlayerConfigButton = makeActionButton(
+	cloudPanel,
+	"Reset Player Save Settings",
+	UDim2.fromOffset(12, 180),
+	UDim2.fromOffset(270, 38)
+)
+resetPlayerConfigButton.BackgroundColor3 =
+	Color3.fromRGB(135, 48, 48)
 
 local cloudSourceLabel = Instance.new("TextLabel")
 cloudSourceLabel.Size = UDim2.new(1, -306, 0, 38)
@@ -10629,6 +11190,25 @@ cloudSourceLabel.TextSize = 10
 cloudSourceLabel.TextColor3 = Color3.fromRGB(155, 205, 255)
 cloudSourceLabel.TextXAlignment = Enum.TextXAlignment.Left
 cloudSourceLabel.Parent = cloudPanel
+
+local resetPlayerConfigInfo = Instance.new("TextLabel")
+resetPlayerConfigInfo.Size =
+	UDim2.new(1, -306, 0, 54)
+resetPlayerConfigInfo.Position =
+	UDim2.fromOffset(294, 174)
+resetPlayerConfigInfo.BackgroundTransparency = 1
+resetPlayerConfigInfo.Text =
+	"Resets only this UserId. Global defaults are not changed. Rejoin after reset."
+resetPlayerConfigInfo.Font = Enum.Font.Code
+resetPlayerConfigInfo.TextSize = 10
+resetPlayerConfigInfo.TextWrapped = true
+resetPlayerConfigInfo.TextColor3 =
+	Color3.fromRGB(255, 175, 175)
+resetPlayerConfigInfo.TextXAlignment =
+	Enum.TextXAlignment.Left
+resetPlayerConfigInfo.TextYAlignment =
+	Enum.TextYAlignment.Top
+resetPlayerConfigInfo.Parent = cloudPanel
 
 local function clearHost(moduleName)
 	local host = moduleHosts[moduleName]
@@ -11061,6 +11641,97 @@ defaultButton.MouseButton1Click:Connect(function()
 
 	defaultButton.Text = "Set Current Settings as Default"
 	defaultButton.Active = true
+end)
+
+
+local resetConfirmationExpiresAt = 0
+local resetButtonDefaultText =
+	"Reset Player Save Settings"
+
+local function restoreResetButton()
+	resetPlayerConfigButton.Text =
+		resetButtonDefaultText
+	resetPlayerConfigButton.BackgroundColor3 =
+		Color3.fromRGB(135, 48, 48)
+	resetPlayerConfigButton.Active = true
+end
+
+resetPlayerConfigButton.MouseButton1Click:Connect(function()
+	if tebConfigResetLocked then
+		setStatus(
+			"Player save settings are already reset. Rejoin to load defaults."
+		)
+		return
+	end
+
+	local now = os.clock()
+
+	if now > resetConfirmationExpiresAt then
+		resetConfirmationExpiresAt = now + 5
+		resetPlayerConfigButton.Text =
+			"Click Again to Confirm"
+		resetPlayerConfigButton.BackgroundColor3 =
+			Color3.fromRGB(185, 55, 55)
+
+		setStatus(
+			"Press Reset Player Save Settings again within 5 seconds to confirm.",
+			true
+		)
+
+		task.delay(5.1, function()
+			if not tebConfigResetLocked
+				and os.clock()
+					>= resetConfirmationExpiresAt
+			then
+				restoreResetButton()
+			end
+		end)
+
+		return
+	end
+
+	resetConfirmationExpiresAt = 0
+	resetPlayerConfigButton.Active = false
+	resetPlayerConfigButton.Text =
+		"Resetting player saves..."
+
+	setStatus(
+		"Resetting Hub, Bloom, Mailer, and Auto Drop player saves..."
+	)
+
+	task.spawn(function()
+		local ok, failures =
+			tebResetPlayerSaveSettings()
+
+		if ok then
+			resetPlayerConfigButton.Text =
+				"Reset Complete — Rejoin"
+			resetPlayerConfigButton.BackgroundColor3 =
+				Color3.fromRGB(45, 125, 65)
+			cloudSourceLabel.Text =
+				"Loaded source: player reset pending"
+
+			setStatus(
+				"Player save settings reset successfully. Rejoin now to load the global default or hardcoded defaults. Autosave is locked until rejoin."
+			)
+		else
+			resetPlayerConfigButton.Text =
+				"Reset Partial — Retry"
+			resetPlayerConfigButton.BackgroundColor3 =
+				Color3.fromRGB(175, 95, 35)
+			resetPlayerConfigButton.Active = true
+
+			setStatus(
+				"Some player scopes failed to reset: "
+					.. table.concat(
+						failures,
+						" | "
+					)
+					.. ". Autosave remains locked to protect the scopes that were reset.",
+				true
+			)
+		end
+	end)
 end)
 
 -- Auto Rejoin was registered before UI creation so it is active immediately.
