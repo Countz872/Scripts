@@ -10,7 +10,7 @@ local TeleportService = game:GetService("TeleportService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local TEB_HUB_VERSION = "1.8.8"
+local TEB_HUB_VERSION = "1.8.9"
 _G.TEB_HUB_VERSION = TEB_HUB_VERSION
 
 -- NEVER include the script version in these cloud keys.
@@ -9587,6 +9587,19 @@ local FRUIT_KEEP_NAMES = {
 -- false = keeps MeshParts if their name is listed in FRUIT_KEEP_NAMES.
 local REMOVE_ALL_FRUIT_MESHPARTS = true
 
+-- Remaining-visual controls. These affect only BaseParts that survive the
+-- optimizer. LocalTransparencyModifier is reversible and does not disable
+-- touch/query/collision behavior used by automation.
+local remainingPlantVisualsVisible = true
+local remainingFruitVisualsVisible = true
+
+local remainingPlantParts =
+	setmetatable({}, {__mode = "k"})
+local remainingFruitParts =
+	setmetatable({}, {__mode = "k"})
+local optimizedLocalTransparency =
+	setmetatable({}, {__mode = "k"})
+
 local processed = {}
 
 --------------------------------------------------
@@ -9728,6 +9741,118 @@ local function disableLight(light)
 	if light and light.Parent then
 		light.Enabled = false
 	end
+end
+
+local function applyRemainingPartVisibility(
+	part,
+	isVisible
+)
+	if not part
+		or not part.Parent
+		or not part:IsA("BasePart")
+	then
+		return
+	end
+
+	local optimizedTransparency =
+		optimizedLocalTransparency[part]
+
+	if optimizedTransparency == nil then
+		-- Capture the state after normal optimizer processing. Parts such as
+		-- hidden Base/touch objects therefore stay hidden when visuals are
+		-- shown again.
+		optimizedTransparency =
+			part.LocalTransparencyModifier
+		optimizedLocalTransparency[part] =
+			optimizedTransparency
+	end
+
+	pcall(function()
+		part.LocalTransparencyModifier =
+			isVisible
+			and optimizedTransparency
+			or 1
+	end)
+end
+
+local function registerRemainingPart(part)
+	if not part
+		or not part.Parent
+		or not part:IsA("BasePart")
+		or not isInsidePlants(part)
+	then
+		return
+	end
+
+	if isInsideFruits(part) then
+		remainingFruitParts[part] = true
+		applyRemainingPartVisibility(
+			part,
+			remainingFruitVisualsVisible
+		)
+	else
+		remainingPlantParts[part] = true
+		applyRemainingPartVisibility(
+			part,
+			remainingPlantVisualsVisible
+		)
+	end
+end
+
+local function applyRemainingSetVisibility(
+	partSet,
+	isVisible
+)
+	for part in pairs(partSet) do
+		if part and part.Parent then
+			applyRemainingPartVisibility(
+				part,
+				isVisible
+			)
+		else
+			partSet[part] = nil
+			optimizedLocalTransparency[part] = nil
+		end
+	end
+end
+
+local function setRemainingPlantVisualsVisible(
+	isVisible
+)
+	remainingPlantVisualsVisible =
+		isVisible == true
+
+	applyRemainingSetVisibility(
+		remainingPlantParts,
+		remainingPlantVisualsVisible
+	)
+end
+
+local function setRemainingFruitVisualsVisible(
+	isVisible
+)
+	remainingFruitVisualsVisible =
+		isVisible == true
+
+	applyRemainingSetVisibility(
+		remainingFruitParts,
+		remainingFruitVisualsVisible
+	)
+end
+
+local function countTrackedRemainingParts(partSet)
+	local count = 0
+
+	for part in pairs(partSet) do
+		if part and part.Parent then
+			count += 1
+		else
+			partSet[part] = nil
+			optimizedLocalTransparency[part] = nil
+		end
+	end
+
+	return count
 end
 
 --------------------------------------------------
@@ -9905,6 +10030,13 @@ local function process(instance)
 
 	if isInsidePlants(instance) then
 		processPlantObject(instance)
+
+		-- Deleted parts have no parent and are intentionally not tracked.
+		if instance.Parent
+			and instance:IsA("BasePart")
+		then
+			registerRemainingPart(instance)
+		end
 	else
 		processGlobalObject(instance)
 	end
@@ -9950,7 +10082,7 @@ gui.Parent = playerGui
 
 local main = Instance.new("Frame")
 main.Name = "MainFrame"
-main.Size = UDim2.fromOffset(280, 300)
+main.Size = UDim2.fromOffset(280, 340)
 main.Position = UDim2.fromOffset(25, 180)
 main.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 main.BorderSizePixel = 0
@@ -10041,9 +10173,59 @@ mutatedLabel.Font = Enum.Font.Code
 mutatedLabel.TextXAlignment = Enum.TextXAlignment.Left
 mutatedLabel.Parent = content
 
+local plantVisualButton =
+	Instance.new("TextButton")
+plantVisualButton.Name =
+	"PlantVisualToggle"
+plantVisualButton.Size =
+	UDim2.fromOffset(130, 30)
+plantVisualButton.Position =
+	UDim2.fromOffset(0, 78)
+plantVisualButton.BackgroundColor3 =
+	Color3.fromRGB(45, 115, 65)
+plantVisualButton.BorderSizePixel = 0
+plantVisualButton.TextColor3 =
+	Color3.fromRGB(255, 255, 255)
+plantVisualButton.TextSize = 12
+plantVisualButton.Font =
+	Enum.Font.SourceSansBold
+plantVisualButton.Parent = content
+
+local plantVisualCorner =
+	Instance.new("UICorner")
+plantVisualCorner.CornerRadius =
+	UDim.new(0, 6)
+plantVisualCorner.Parent =
+	plantVisualButton
+
+local fruitVisualButton =
+	Instance.new("TextButton")
+fruitVisualButton.Name =
+	"FruitVisualToggle"
+fruitVisualButton.Size =
+	UDim2.fromOffset(130, 30)
+fruitVisualButton.Position =
+	UDim2.fromOffset(134, 78)
+fruitVisualButton.BackgroundColor3 =
+	Color3.fromRGB(45, 115, 65)
+fruitVisualButton.BorderSizePixel = 0
+fruitVisualButton.TextColor3 =
+	Color3.fromRGB(255, 255, 255)
+fruitVisualButton.TextSize = 12
+fruitVisualButton.Font =
+	Enum.Font.SourceSansBold
+fruitVisualButton.Parent = content
+
+local fruitVisualCorner =
+	Instance.new("UICorner")
+fruitVisualCorner.CornerRadius =
+	UDim.new(0, 6)
+fruitVisualCorner.Parent =
+	fruitVisualButton
+
 local mutationTitle = Instance.new("TextLabel")
 mutationTitle.Size = UDim2.new(1, 0, 0, 22)
-mutationTitle.Position = UDim2.fromOffset(0, 80)
+mutationTitle.Position = UDim2.fromOffset(0, 116)
 mutationTitle.BackgroundTransparency = 1
 mutationTitle.Text = "Mutation breakdown"
 mutationTitle.TextColor3 = Color3.fromRGB(235, 235, 245)
@@ -10054,8 +10236,8 @@ mutationTitle.Parent = content
 
 local mutationScroll = Instance.new("ScrollingFrame")
 mutationScroll.Name = "MutationScroll"
-mutationScroll.Size = UDim2.new(1, 0, 1, -106)
-mutationScroll.Position = UDim2.fromOffset(0, 104)
+mutationScroll.Size = UDim2.new(1, 0, 1, -144)
+mutationScroll.Position = UDim2.fromOffset(0, 142)
 mutationScroll.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
 mutationScroll.BackgroundTransparency = 0.2
 mutationScroll.BorderSizePixel = 0
@@ -10091,6 +10273,59 @@ local watchedFolders = {}
 local folderConnections = {}
 local fruitMutationConnections = {}
 local updateQueued = false
+
+local function refreshVisualToggleButtons()
+	local plantPartCount =
+		countTrackedRemainingParts(
+			remainingPlantParts
+		)
+	local fruitPartCount =
+		countTrackedRemainingParts(
+			remainingFruitParts
+		)
+
+	plantVisualButton.Text = string.format(
+		"Plants: %s (%d)",
+		remainingPlantVisualsVisible
+			and "SHOWN"
+			or "HIDDEN",
+		plantPartCount
+	)
+	plantVisualButton.BackgroundColor3 =
+		remainingPlantVisualsVisible
+		and Color3.fromRGB(45, 115, 65)
+		or Color3.fromRGB(120, 55, 55)
+
+	fruitVisualButton.Text = string.format(
+		"Fruits: %s (%d)",
+		remainingFruitVisualsVisible
+			and "SHOWN"
+			or "HIDDEN",
+		fruitPartCount
+	)
+	fruitVisualButton.BackgroundColor3 =
+		remainingFruitVisualsVisible
+		and Color3.fromRGB(45, 115, 65)
+		or Color3.fromRGB(120, 55, 55)
+end
+
+plantVisualButton.MouseButton1Click:Connect(
+	function()
+		setRemainingPlantVisualsVisible(
+			not remainingPlantVisualsVisible
+		)
+		refreshVisualToggleButtons()
+	end
+)
+
+fruitVisualButton.MouseButton1Click:Connect(
+	function()
+		setRemainingFruitVisualsVisible(
+			not remainingFruitVisualsVisible
+		)
+		refreshVisualToggleButtons()
+	end
+)
 
 local function getMutationName(fruit)
 	if not fruit then
@@ -10206,8 +10441,12 @@ local function countNow()
 	)
 
 	mutationListLabel.Text = table.concat(lines, "\n")
-	mutationListLabel.Size = UDim2.new(1, -12, 0, listHeight)
-	mutationScroll.CanvasSize = UDim2.fromOffset(0, listHeight + 10)
+	mutationListLabel.Size =
+		UDim2.new(1, -12, 0, listHeight)
+	mutationScroll.CanvasSize =
+		UDim2.fromOffset(0, listHeight + 10)
+
+	refreshVisualToggleButtons()
 end
 
 local function queueCounterUpdate()
@@ -10450,6 +10689,24 @@ _G.TEBHubModules.Optimizer = {
 		return type(shared) == "table"
 			and (tonumber(shared.Fruits) or 0)
 			or 0
+	end,
+	SetPlantVisualsVisible = function(value)
+		setRemainingPlantVisualsVisible(
+			value == true
+		)
+		refreshVisualToggleButtons()
+	end,
+	SetFruitVisualsVisible = function(value)
+		setRemainingFruitVisualsVisible(
+			value == true
+		)
+		refreshVisualToggleButtons()
+	end,
+	GetPlantVisualsVisible = function()
+		return remainingPlantVisualsVisible
+	end,
+	GetFruitVisualsVisible = function()
+		return remainingFruitVisualsVisible
 	end
 }
 
